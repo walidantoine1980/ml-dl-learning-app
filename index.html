@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>IA Interactive | Scrollytelling ML & DL</title>
+    <title>Expert IA | Scrollytelling ML & DL</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="style.css">
@@ -18,39 +18,33 @@
 </head>
 <body class="bg-[#0b1120] text-slate-300 font-sans h-screen flex flex-col overflow-hidden">
 
-    <!-- Header -->
     <header class="h-16 bg-[#1e293b]/90 backdrop-blur-md border-b border-slate-700/50 flex items-center justify-between px-8 z-50 shrink-0 shadow-lg">
         <div class="flex items-center gap-3">
             <div class="w-8 h-8 rounded-lg bg-gradient-to-tr from-indigo-500 to-pink-500 flex items-center justify-center text-white font-bold text-xl shadow-lg shadow-indigo-500/20">∑</div>
-            <h1 class="text-xl font-bold text-white tracking-tight">Antigravity <span class="text-indigo-400 font-normal">AI Academy</span></h1>
+            <h1 class="text-xl font-bold text-white tracking-tight">Antigravity <span class="text-indigo-400 font-normal">AI Academy Expert</span></h1>
         </div>
         <div class="text-sm font-medium text-slate-400 flex items-center gap-2">
             <span class="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>
-            Défilez pour apprendre (Scrollytelling)
+            Défilez pour explorer (11 Chapitres)
         </div>
     </header>
 
-    <!-- Main Content Split Screen -->
     <main class="flex-1 flex overflow-hidden">
         
-        <!-- Left: Scrollable Text (Scrollytelling) -->
+        <!-- Left: Scrollable Text -->
         <section class="w-[45%] h-full overflow-y-auto custom-scrollbar relative z-10 bg-[#0f172a] shadow-2xl border-r border-slate-800" id="scroll-container">
-            
-            <div class="h-[20vh]"></div> <!-- Top Spacer -->
+            <div class="h-[20vh]"></div>
 
             <!-- Step 1: Intro -->
             <div class="step-content p-12 min-h-[70vh] flex flex-col justify-center transition-opacity duration-500" data-step="1">
                 <div class="tag mb-6">Chapitre 1</div>
                 <h2 class="text-4xl font-extrabold text-white mb-6">Démystifier l'I.A.</h2>
-                <p class="text-lg leading-relaxed mb-6">
-                    L'Intelligence Artificielle (IA) n'est pas de la magie. C'est un ensemble de techniques mathématiques permettant aux machines d'imiter l'intelligence humaine.
-                </p>
+                <p class="text-lg leading-relaxed mb-6">L'Intelligence Artificielle (IA) n'est pas de la magie. C'est un ensemble de techniques mathématiques d'optimisation.</p>
                 <div class="bg-[#1e293b] p-6 rounded-2xl border border-slate-700">
-                    <h3 class="text-xl font-bold text-indigo-400 mb-4">Les Poupées Russes</h3>
                     <ul class="space-y-4">
-                        <li><strong class="text-white">L'IA :</strong> Le concept global. Faire faire à la machine des tâches "intelligentes".</li>
-                        <li><strong class="text-purple-400">Le Machine Learning (ML) :</strong> Un sous-domaine. Au lieu d'écrire des règles, on donne des données à la machine pour qu'elle apprenne les règles.</li>
-                        <li><strong class="text-pink-400">Le Deep Learning (DL) :</strong> Un sous-domaine du ML. Inspiré du cerveau humain, utilisant des "Réseaux de Neurones" pour des tâches très complexes.</li>
+                        <li><strong class="text-white">L'IA :</strong> Le concept global d'imitation de l'intelligence.</li>
+                        <li><strong class="text-purple-400">Le Machine Learning (ML) :</strong> L'apprentissage statistique basé sur les données.</li>
+                        <li><strong class="text-pink-400">Le Deep Learning (DL) :</strong> L'apprentissage profond via réseaux de neurones.</li>
                     </ul>
                 </div>
             </div>
@@ -58,106 +52,111 @@
             <!-- Step 2: ML Regression -->
             <div class="step-content p-12 min-h-[80vh] flex flex-col justify-center transition-opacity duration-500" data-step="2">
                 <div class="tag bg-purple-500/20 text-purple-400 mb-6">Machine Learning</div>
-                <h2 class="text-4xl font-extrabold text-white mb-6">La Régression (Prédire)</h2>
-                <p class="text-lg leading-relaxed mb-6">
-                    L'exemple le plus simple est la <strong>Régression Linéaire</strong>. Le but ? Prédire une valeur continue (comme le prix d'une maison) en fonction d'une autre (comme sa taille).
-                </p>
-                <div class="math-block text-2xl text-center my-8 text-white">
-                    $$ y = w \cdot x + b $$
-                </div>
-                <p class="text-lg leading-relaxed mb-8">
-                    La machine cherche le meilleur Poids ($w$) et Biais ($b$) pour minimiser l'erreur globale.
-                </p>
+                <h2 class="text-4xl font-extrabold text-white mb-6">La Régression</h2>
+                <p class="text-lg leading-relaxed mb-6">Prédire une valeur continue (ex: Prix d'une maison) via la fonction affine :</p>
+                <div class="math-block text-2xl text-center my-8 text-white">$$ \hat{y} = w \cdot x + b $$</div>
                 <div class="interactive-prompt bg-indigo-500/10 border border-indigo-500/30 p-4 rounded-xl text-indigo-300">
-                    👉 <strong>À vous de jouer :</strong> Observez le graphique à droite. Modifiez les paramètres pour essayer d'ajuster la ligne rose aux points bleus le mieux possible !
+                    👉 <strong>À vous de jouer :</strong> Modifiez les paramètres $w$ et $b$ à droite pour ajuster la droite aux données.
                 </div>
             </div>
 
-            <!-- Step 3: ML Classification -->
+            <!-- Step 3: Loss Function -->
             <div class="step-content p-12 min-h-[80vh] flex flex-col justify-center transition-opacity duration-500" data-step="3">
-                <div class="tag bg-purple-500/20 text-purple-400 mb-6">Machine Learning</div>
-                <h2 class="text-4xl font-extrabold text-white mb-6">La Classification (Trier)</h2>
-                <p class="text-lg leading-relaxed mb-6">
-                    Parfois, on ne veut pas prédire un nombre, mais une <strong>catégorie</strong>. C'est la Classification.
-                </p>
-                <p class="text-lg leading-relaxed mb-6">
-                    <strong>Exemple : Le filtre Anti-Spam.</strong> On donne à l'IA des milliers d'emails avec 2 paramètres (ex: Nombre de mots urgents vs Longueur). Elle doit tracer une <strong>frontière de décision</strong> pour séparer les Spams des Non-Spams.
-                </p>
+                <div class="tag bg-red-500/20 text-red-400 mb-6">Théorie Mathématique</div>
+                <h2 class="text-4xl font-extrabold text-white mb-6">La Fonction de Coût</h2>
+                <p class="text-lg leading-relaxed mb-6">Pour que la machine apprenne, elle doit savoir <strong>à quel point elle se trompe</strong>. C'est le rôle de la fonction de coût $J(w, b)$.</p>
+                <p class="text-lg leading-relaxed mb-6">L'Erreur Quadratique Moyenne (MSE) calcule la moyenne du carré des écarts entre les vrais prix $y$ et nos prédictions $\hat{y}$ :</p>
                 <div class="math-block text-xl text-center my-6 text-white">
-                    $$ P(y=1|x) = \frac{1}{1 + e^{-(wx+b)}} $$
+                    $$ J(w) = \frac{1}{N} \sum_{i=1}^{N} (y_i - \hat{y}_i)^2 $$
                 </div>
-                <div class="interactive-prompt bg-purple-500/10 border border-purple-500/30 p-4 rounded-xl text-purple-300 mt-4">
-                    👉 <strong>Visualisation :</strong> À droite, voyez comment la "Régression Logistique" sépare mathématiquement les emails frauduleux (rouges) des emails valides (verts).
+                <div class="interactive-prompt bg-red-500/10 border border-red-500/30 p-4 rounded-xl text-red-300">
+                    👉 <strong>Visualisation :</strong> À droite, observez la parabole de l'erreur. Le but de l'IA est mathématiquement simple : trouver le Poids $w$ qui nous amène tout au fond du bol !
                 </div>
             </div>
 
-            <!-- Step 4: ML Clustering -->
+            <!-- Step 4: Gradient Descent -->
             <div class="step-content p-12 min-h-[80vh] flex flex-col justify-center transition-opacity duration-500" data-step="4">
-                <div class="tag bg-purple-500/20 text-purple-400 mb-6">Machine Learning</div>
-                <h2 class="text-4xl font-extrabold text-white mb-6">Le Clustering (Regrouper)</h2>
-                <p class="text-lg leading-relaxed mb-6">
-                    Que faire si l'on n'a pas de labels (pas de réponses à fournir à la machine) ? C'est l'<strong>Apprentissage Non-Supervisé</strong>.
-                </p>
-                <p class="text-lg leading-relaxed mb-6">
-                    L'algorithme <strong>K-Means</strong> prend un jeu de données chaotique et y découvre lui-même des groupes (Clusters). Très utilisé pour segmenter automatiquement les clients d'un magasin selon leurs habitudes d'achat.
-                </p>
-                <div class="interactive-prompt bg-indigo-500/10 border border-indigo-500/30 p-4 rounded-xl text-indigo-300">
-                    👉 <strong>Animation K-Means :</strong> Observez comment les "centroïdes" se déplacent pour grouper intelligemment les clients par couleurs de manière 100% autonome.
+                <div class="tag bg-yellow-500/20 text-yellow-400 mb-6">Théorie Mathématique</div>
+                <h2 class="text-4xl font-extrabold text-white mb-6">La Descente de Gradient</h2>
+                <p class="text-lg leading-relaxed mb-6">L'algorithme absolu du ML. Comment atteindre le fond de la parabole aveuglément ? En calculant la pente (dérivée) et en faisant un pas dans le sens opposé.</p>
+                <div class="math-block text-xl text-center my-6 text-white">
+                    $$ w := w - \alpha \frac{\partial J}{\partial w} $$
+                </div>
+                <p class="text-lg leading-relaxed mb-6">$\alpha$ est le <strong>Taux d'Apprentissage (Learning Rate)</strong>. S'il est trop petit, l'apprentissage est infiniment lent. S'il est trop grand, la bille saute en dehors du bol !</p>
+                <div class="interactive-prompt bg-yellow-500/10 border border-yellow-500/30 p-4 rounded-xl text-yellow-300">
+                    👉 <strong>Simulateur :</strong> Choisissez un $\alpha$ à droite et cliquez sur "Lancer l'apprentissage". Observez la bille converger vers l'optimum.
                 </div>
             </div>
 
-            <!-- Step 5: DL Neural Network -->
+            <!-- Step 5: Classification -->
             <div class="step-content p-12 min-h-[80vh] flex flex-col justify-center transition-opacity duration-500" data-step="5">
+                <div class="tag bg-purple-500/20 text-purple-400 mb-6">Machine Learning</div>
+                <h2 class="text-4xl font-extrabold text-white mb-6">La Classification</h2>
+                <p class="text-lg leading-relaxed mb-6">Séparer des données en catégories (ex: Spam vs Non-Spam) à l'aide d'une frontière de décision mathématique.</p>
+                <div class="math-block text-xl text-center my-6 text-white">
+                    $$ P(y=1) = \frac{1}{1 + e^{-(wx+b)}} $$
+                </div>
+            </div>
+
+            <!-- Step 6: Clustering -->
+            <div class="step-content p-12 min-h-[80vh] flex flex-col justify-center transition-opacity duration-500" data-step="6">
+                <div class="tag bg-purple-500/20 text-purple-400 mb-6">Machine Learning</div>
+                <h2 class="text-4xl font-extrabold text-white mb-6">Le Clustering (K-Means)</h2>
+                <p class="text-lg leading-relaxed mb-6">Apprentissage non-supervisé : Trouver des structures cachées sans labels (ex: Segmentation client).</p>
+                <div class="interactive-prompt bg-indigo-500/10 border border-indigo-500/30 p-4 rounded-xl text-indigo-300">
+                    👉 <strong>Animation :</strong> Suivez les centroïdes qui regroupent les clients par couleurs.
+                </div>
+            </div>
+
+            <!-- Step 7: Overfitting -->
+            <div class="step-content p-12 min-h-[80vh] flex flex-col justify-center transition-opacity duration-500" data-step="7">
+                <div class="tag bg-orange-500/20 text-orange-400 mb-6">Théorie Machine Learning</div>
+                <h2 class="text-4xl font-extrabold text-white mb-6">Le Surapprentissage</h2>
+                <p class="text-lg leading-relaxed mb-6">L'ennemi juré de l'IA : l'<strong>Overfitting</strong>. Cela se produit quand un modèle est "trop complexe" et apprend les données par cœur, incluant le bruit, au lieu d'apprendre la tendance.</p>
+                <div class="interactive-prompt bg-orange-500/10 border border-orange-500/30 p-4 rounded-xl text-orange-300">
+                    👉 <strong>Comparaison :</strong> À droite, comparez un modèle sous-appris (ligne droite), un bon modèle (courbe verte), et un modèle sur-appris (courbe rouge chaotique qui passe par chaque point mais prédira très mal les données futures).
+                </div>
+            </div>
+
+            <!-- Step 8: Deep Learning NN -->
+            <div class="step-content p-12 min-h-[80vh] flex flex-col justify-center transition-opacity duration-500" data-step="8">
                 <div class="tag bg-pink-500/20 text-pink-400 mb-6">Deep Learning</div>
                 <h2 class="text-4xl font-extrabold text-white mb-6">Les Réseaux de Neurones</h2>
-                <p class="text-lg leading-relaxed mb-6">
-                    Le Deep Learning est la branche la plus puissante. En empilant des "neurones artificiels" en plusieurs couches (Layers), on peut résoudre des problèmes non-linéaires extrêmement complexes.
-                </p>
-                <div class="bg-[#1e293b] p-6 rounded-2xl border border-slate-700 mb-6">
-                    <p class="mb-4">Chaque neurone reçoit une information, la pondère ($w$), ajoute un biais ($b$), et l'active ($f$) pour la transmettre au suivant :</p>
-                    <div class="math-block text-xl text-center text-white">
-                        $$ a = \text{ReLU}\left(\sum_{i} w_i \cdot x_i + b\right) $$
-                    </div>
-                </div>
-                <div class="interactive-prompt bg-pink-500/10 border border-pink-500/30 p-4 rounded-xl text-pink-300">
-                    👉 <strong>Simulateur :</strong> Cliquez sur les cercles d'entrée à droite pour déclencher une impulsion et voir l'information traverser les couches cachées !
+                <p class="text-lg leading-relaxed mb-6">Empiler des couches de neurones pour modéliser des fonctions extrêmement non-linéaires.</p>
+                <div class="math-block text-xl text-center text-white my-4">
+                    $$ a = \text{ReLU}\left(\sum w_i x_i + b\right) $$
                 </div>
             </div>
 
-            <!-- Step 6: DL Vision -->
-            <div class="step-content p-12 min-h-[80vh] flex flex-col justify-center transition-opacity duration-500" data-step="6">
+            <!-- Step 9: Backpropagation -->
+            <div class="step-content p-12 min-h-[80vh] flex flex-col justify-center transition-opacity duration-500" data-step="9">
+                <div class="tag bg-red-500/20 text-red-400 mb-6">Théorie Deep Learning</div>
+                <h2 class="text-4xl font-extrabold text-white mb-6">La Rétropropagation</h2>
+                <p class="text-lg leading-relaxed mb-6">Comment régler 100 millions de poids simultanément ? C'est le triomphe algorithmique de la <strong>Backpropagation</strong> basée sur la règle de dérivation en chaîne (Chain Rule).</p>
+                <div class="math-block text-lg text-center text-white my-4">
+                    $$ \frac{\partial L}{\partial w_{ij}} = \frac{\partial L}{\partial a_j} \cdot \frac{\partial a_j}{\partial z_j} \cdot \frac{\partial z_j}{\partial w_{ij}} $$
+                </div>
+                <p class="text-lg leading-relaxed mb-6">L'erreur calculée à la sortie "remonte" le réseau à l'envers, ajustant chaque poids de façon optimale.</p>
+                <div class="interactive-prompt bg-red-500/10 border border-red-500/30 p-4 rounded-xl text-red-300">
+                    👉 <strong>Simulateur :</strong> Cliquez sur le bouton "Calculer l'Erreur" à droite pour déclencher une vague d'ajustement rouge qui remonte vers la source !
+                </div>
+            </div>
+
+            <!-- Step 10: Vision -->
+            <div class="step-content p-12 min-h-[80vh] flex flex-col justify-center transition-opacity duration-500" data-step="10">
                 <div class="tag bg-pink-500/20 text-pink-400 mb-6">Deep Learning</div>
-                <h2 class="text-4xl font-extrabold text-white mb-6">Vision par Ordinateur (CNN)</h2>
-                <p class="text-lg leading-relaxed mb-6">
-                    Comment une IA "voit"-elle une image ? Pas globalement, mais par petits blocs grâce aux <strong>Réseaux de Neurones Convolutifs (CNN)</strong>.
-                </p>
-                <p class="text-lg leading-relaxed mb-6">
-                    L'image est scannée par des "filtres". Les premières couches détectent des pixels simples (lignes, bords). Les couches profondes assemblent ces bords pour détecter des formes complexes (yeux, oreilles, puis visages).
-                </p>
-                <div class="interactive-prompt bg-pink-500/10 border border-pink-500/30 p-4 rounded-xl text-pink-300">
-                    👉 <strong>Visualisation :</strong> Regardez la décomposition de l'image de chat à droite. L'IA extrait d'abord les contours avant de comprendre le concept "Chat".
-                </div>
+                <h2 class="text-4xl font-extrabold text-white mb-6">Computer Vision (CNN)</h2>
+                <p class="text-lg leading-relaxed mb-6">Extraction de caractéristiques hiérarchiques via Convolution. Pixels $\rightarrow$ Bords $\rightarrow$ Formes $\rightarrow$ Objets.</p>
             </div>
 
-            <!-- Step 7: DL NLP -->
-            <div class="step-content p-12 min-h-[80vh] flex flex-col justify-center transition-opacity duration-500" data-step="7">
+            <!-- Step 11: NLP -->
+            <div class="step-content p-12 min-h-[80vh] flex flex-col justify-center transition-opacity duration-500" data-step="11">
                 <div class="tag bg-pink-500/20 text-pink-400 mb-6">Deep Learning</div>
-                <h2 class="text-4xl font-extrabold text-white mb-6">Le Langage Naturel (NLP)</h2>
-                <p class="text-lg leading-relaxed mb-6">
-                    Comment des IA comme ChatGPT comprennent-elles le français ? Elles ne lisent pas des lettres, elles transforment les mots en coordonnées mathématiques appelées <strong>Embeddings</strong>.
-                </p>
-                <p class="text-lg leading-relaxed mb-6">
-                    Des mots ayant un sens similaire (ex: "Roi" et "Reine") seront placés très proches les uns des autres dans un espace à 1000 dimensions.
-                </p>
-                <div class="math-block text-xl text-center my-6 text-white font-mono">
-                    [ Roi ] - [ Homme ] + [ Femme ] ≈ [ Reine ]
-                </div>
-                <div class="interactive-prompt bg-pink-500/10 border border-pink-500/30 p-4 rounded-xl text-pink-300">
-                    👉 <strong>Carte Sémantique :</strong> Observez l'espace vectoriel à droite. L'IA a automatiquement groupé les mots par concepts (Animaux, Technologie, Royauté) car ils vivent dans le même "quartier" mathématique.
-                </div>
+                <h2 class="text-4xl font-extrabold text-white mb-6">NLP (Word Embeddings)</h2>
+                <p class="text-lg leading-relaxed mb-6">Représentation spatiale du langage. [Roi] - [Homme] + [Femme] = [Reine].</p>
             </div>
 
-            <div class="h-[50vh]"></div> <!-- Bottom Spacer -->
+            <div class="h-[50vh]"></div>
         </section>
 
         <!-- Right: Sticky Visualizations -->
@@ -168,128 +167,121 @@
                 <div class="venn-diagram relative w-full max-w-md aspect-square">
                     <div class="absolute inset-0 rounded-full border-2 border-slate-600 flex items-start justify-center pt-8 text-xl font-bold text-slate-500 transition-all duration-1000" id="venn-ia">Intelligence Artificielle</div>
                     <div class="absolute inset-[15%] rounded-full border-2 border-purple-500/50 bg-purple-500/10 flex items-start justify-center pt-8 text-lg font-bold text-purple-400 transition-all duration-1000" id="venn-ml">Machine Learning</div>
-                    <div class="absolute inset-[30%] rounded-full border-2 border-pink-500/50 bg-pink-500/10 flex items-center justify-center text-base font-bold text-pink-400 transition-all duration-1000 text-center px-4" id="venn-dl">Deep Learning<br><span class="text-xs font-normal opacity-70">(Réseaux de Neurones)</span></div>
+                    <div class="absolute inset-[30%] rounded-full border-2 border-pink-500/50 bg-pink-500/10 flex items-center justify-center text-base font-bold text-pink-400 transition-all duration-1000 text-center px-4" id="venn-dl">Deep Learning</div>
                 </div>
             </div>
 
-            <!-- Vis 2: Regression (Chart.js) -->
+            <!-- Vis 2: Regression -->
             <div id="vis-2" class="vis-layer absolute inset-8 flex flex-col transition-all duration-700 opacity-0 z-0 pointer-events-none">
                 <div class="flex-1 bg-[#1e293b] rounded-2xl p-4 shadow-inner relative w-full h-[60%]">
                     <canvas id="regressionChart"></canvas>
-                    <div id="lossDisplay" class="absolute top-6 right-6 bg-slate-900/80 backdrop-blur-md px-4 py-2 rounded-lg border border-slate-700 text-red-400 font-mono text-sm shadow-xl">
-                        Erreur Globale: <span id="lossValue">0.00</span>
-                    </div>
                 </div>
-                
-                <div class="mt-6 bg-[#1e293b] p-6 rounded-2xl border border-slate-700 w-full pointer-events-auto shadow-2xl">
+                <div class="mt-6 bg-[#1e293b] p-6 rounded-2xl border border-slate-700 w-full pointer-events-auto">
                     <div class="mb-6">
-                        <div class="flex justify-between mb-2">
-                            <label class="text-indigo-400 font-bold">Poids (w) : Inclinaison</label>
-                            <span id="wValue" class="font-mono text-white">1.00</span>
-                        </div>
+                        <div class="flex justify-between mb-2"><label class="text-indigo-400 font-bold">Poids (w)</label><span id="wValue" class="font-mono text-white">1.00</span></div>
                         <input type="range" id="wSlider" min="-5" max="5" step="0.1" value="-2" class="w-full slider-indigo">
                     </div>
                     <div>
-                        <div class="flex justify-between mb-2">
-                            <label class="text-pink-400 font-bold">Biais (b) : Hauteur initiale</label>
-                            <span id="bValue" class="font-mono text-white">0.00</span>
-                        </div>
+                        <div class="flex justify-between mb-2"><label class="text-pink-400 font-bold">Biais (b)</label><span id="bValue" class="font-mono text-white">0.00</span></div>
                         <input type="range" id="bSlider" min="-50" max="150" step="1" value="100" class="w-full slider-pink">
                     </div>
                 </div>
             </div>
 
-            <!-- Vis 3: Classification (Chart.js) -->
+            <!-- Vis 3: Loss Function (Parabola) -->
             <div id="vis-3" class="vis-layer absolute inset-8 flex items-center justify-center transition-all duration-700 opacity-0 z-0 pointer-events-none">
                 <div class="w-full h-[80%] bg-[#1e293b] rounded-2xl p-6 shadow-2xl border border-slate-700 relative">
-                    <h3 class="absolute top-6 left-6 text-white font-bold text-lg z-10">Frontière Anti-Spam</h3>
-                    <canvas id="classificationChart"></canvas>
+                    <h3 class="absolute top-6 left-6 text-white font-bold text-lg z-10">La courbe d'Erreur J(w)</h3>
+                    <canvas id="lossChart"></canvas>
                 </div>
             </div>
 
-            <!-- Vis 4: Clustering (Chart.js) -->
-            <div id="vis-4" class="vis-layer absolute inset-8 flex items-center justify-center transition-all duration-700 opacity-0 z-0 pointer-events-none">
+            <!-- Vis 4: Gradient Descent Animation -->
+            <div id="vis-4" class="vis-layer absolute inset-8 flex flex-col transition-all duration-700 opacity-0 z-0 pointer-events-none">
+                <div class="flex-1 bg-[#1e293b] rounded-2xl p-4 shadow-inner relative w-full h-[60%]">
+                    <canvas id="gradientChart"></canvas>
+                </div>
+                <div class="mt-6 bg-[#1e293b] p-6 rounded-2xl border border-slate-700 w-full pointer-events-auto flex items-center gap-6">
+                    <div class="flex-1">
+                        <div class="flex justify-between mb-2"><label class="text-yellow-400 font-bold">Learning Rate ($\alpha$)</label><span id="lrValue" class="font-mono text-white">0.1</span></div>
+                        <input type="range" id="lrSlider" min="0.01" max="1.5" step="0.01" value="0.1" class="w-full slider-indigo">
+                    </div>
+                    <button id="runGradientBtn" class="bg-yellow-500 hover:bg-yellow-400 text-black font-bold py-3 px-6 rounded-xl shadow-lg transition">Lâcher la bille</button>
+                </div>
+            </div>
+
+            <!-- Vis 5: Classification -->
+            <div id="vis-5" class="vis-layer absolute inset-8 flex items-center justify-center transition-all duration-700 opacity-0 z-0 pointer-events-none">
+                <div class="w-full h-[80%] bg-[#1e293b] rounded-2xl p-6 shadow-2xl border border-slate-700 relative"><canvas id="classificationChart"></canvas></div>
+            </div>
+
+            <!-- Vis 6: Clustering -->
+            <div id="vis-6" class="vis-layer absolute inset-8 flex items-center justify-center transition-all duration-700 opacity-0 z-0 pointer-events-none">
                 <div class="w-full h-[80%] bg-[#1e293b] rounded-2xl p-6 shadow-2xl border border-slate-700 relative">
-                    <h3 class="absolute top-6 left-6 text-white font-bold text-lg z-10">K-Means: Segmentation Clients</h3>
                     <button id="runKmeansBtn" class="absolute top-6 right-6 pointer-events-auto bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-lg hover:bg-indigo-400 transition">Étape Suivante</button>
                     <canvas id="clusteringChart"></canvas>
                 </div>
             </div>
 
-            <!-- Vis 5: Neural Network (Canvas) -->
-            <div id="vis-5" class="vis-layer absolute inset-8 flex flex-col items-center justify-center transition-all duration-700 opacity-0 z-0 pointer-events-none">
-                <div class="relative w-full max-w-2xl h-[500px] flex items-center justify-between" id="nn-container">
-                    <canvas id="nnCanvas" class="absolute inset-0 z-0"></canvas>
-                    <div class="flex flex-col gap-12 z-10 pointer-events-auto">
-                        <button class="neuron input-neuron hover:scale-110 transition" onclick="fireNetwork(0)">0.8</button>
-                        <button class="neuron input-neuron hover:scale-110 transition" onclick="fireNetwork(1)">0.2</button>
-                        <button class="neuron input-neuron hover:scale-110 transition" onclick="fireNetwork(2)">0.5</button>
-                    </div>
-                    <div class="flex flex-col gap-6 z-10">
-                        <div class="neuron hidden-neuron"></div>
-                        <div class="neuron hidden-neuron"></div>
-                        <div class="neuron hidden-neuron"></div>
-                        <div class="neuron hidden-neuron"></div>
-                    </div>
-                    <div class="flex flex-col gap-12 z-10">
-                        <div class="neuron output-neuron text-2xl font-bold">?</div>
-                        <div class="neuron output-neuron text-2xl font-bold">?</div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Vis 6: Computer Vision -->
-            <div id="vis-6" class="vis-layer absolute inset-8 flex flex-col items-center justify-center transition-all duration-700 opacity-0 z-0 pointer-events-none">
-                <div class="bg-[#1e293b] p-8 rounded-3xl border border-slate-700 shadow-2xl w-full max-w-3xl">
-                    <div class="flex items-center gap-6 justify-between">
-                        <!-- Raw Image -->
-                        <div class="flex flex-col items-center">
-                            <div class="w-32 h-32 bg-slate-800 rounded-xl overflow-hidden border-2 border-slate-600 flex items-center justify-center font-bold text-4xl">🐱</div>
-                            <span class="mt-4 text-sm text-slate-400 font-mono">Pixels Bruts</span>
-                        </div>
-                        <div class="text-3xl text-slate-600">→</div>
-                        <!-- Edge Detection -->
-                        <div class="flex flex-col items-center">
-                            <div class="w-32 h-32 bg-slate-900 rounded-xl overflow-hidden border-2 border-indigo-500/50 flex flex-col p-2 gap-1 justify-center relative">
-                                <div class="w-16 h-1 bg-white/40 absolute top-8 left-4 transform rotate-45"></div>
-                                <div class="w-12 h-1 bg-white/40 absolute bottom-10 right-6 transform -rotate-12"></div>
-                                <div class="w-1 h-20 bg-white/40 absolute left-12 top-4"></div>
-                            </div>
-                            <span class="mt-4 text-sm text-indigo-400 font-mono">Filtre 1: Contours</span>
-                        </div>
-                        <div class="text-3xl text-slate-600">→</div>
-                        <!-- Shape Detection -->
-                        <div class="flex flex-col items-center">
-                            <div class="w-32 h-32 bg-slate-900 rounded-xl overflow-hidden border-2 border-purple-500/50 flex items-center justify-center relative">
-                                <div class="w-0 h-0 border-l-[15px] border-l-transparent border-r-[15px] border-r-transparent border-b-[25px] border-b-white/60 absolute top-4 left-6"></div>
-                                <div class="w-0 h-0 border-l-[15px] border-l-transparent border-r-[15px] border-r-transparent border-b-[25px] border-b-white/60 absolute top-4 right-6"></div>
-                                <div class="w-4 h-4 bg-white/60 rounded-full absolute bottom-8"></div>
-                            </div>
-                            <span class="mt-4 text-sm text-purple-400 font-mono">Filtre 2: Formes</span>
-                        </div>
-                        <div class="text-3xl text-slate-600">→</div>
-                        <!-- Classification -->
-                        <div class="flex flex-col items-center">
-                            <div class="w-24 h-24 bg-pink-500/20 rounded-full border-4 border-pink-500 flex items-center justify-center shadow-[0_0_30px_rgba(236,72,153,0.4)]">
-                                <span class="text-white font-black text-xl">CHAT</span>
-                            </div>
-                            <span class="mt-4 text-sm text-pink-400 font-mono text-center">Prédiction<br>99.8%</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Vis 7: NLP (Word Embeddings) -->
+            <!-- Vis 7: Overfitting -->
             <div id="vis-7" class="vis-layer absolute inset-8 flex items-center justify-center transition-all duration-700 opacity-0 z-0 pointer-events-none">
                 <div class="w-full h-[80%] bg-[#1e293b] rounded-2xl p-6 shadow-2xl border border-slate-700 relative">
-                    <h3 class="absolute top-6 left-6 text-white font-bold text-lg z-10">Espace Vectoriel (Word Embeddings)</h3>
-                    <canvas id="nlpChart"></canvas>
+                    <h3 class="absolute top-6 left-6 text-white font-bold text-lg z-10">Complexité du Modèle</h3>
+                    <div class="absolute top-6 right-6 flex gap-2 pointer-events-auto z-10">
+                        <button class="fit-btn bg-slate-700 text-white px-3 py-1 rounded hover:bg-slate-600" data-fit="under">Underfit</button>
+                        <button class="fit-btn bg-green-600 text-white px-3 py-1 rounded hover:bg-green-500" data-fit="good">Optimal</button>
+                        <button class="fit-btn bg-red-600 text-white px-3 py-1 rounded hover:bg-red-500" data-fit="over">Overfit</button>
+                    </div>
+                    <canvas id="overfitChart"></canvas>
                 </div>
+            </div>
+
+            <!-- Vis 8: Neural Network (Forward) -->
+            <div id="vis-8" class="vis-layer absolute inset-8 flex flex-col items-center justify-center transition-all duration-700 opacity-0 z-0 pointer-events-none">
+                <div class="relative w-full max-w-2xl h-[500px] flex items-center justify-between" id="nn-container-fw">
+                    <canvas id="nnCanvasFw" class="absolute inset-0 z-0"></canvas>
+                    <div class="flex flex-col gap-12 z-10 pointer-events-auto">
+                        <button class="neuron input-neuron hover:scale-110" onclick="fireNetworkFw(0)">IN</button>
+                        <button class="neuron input-neuron hover:scale-110" onclick="fireNetworkFw(1)">IN</button>
+                    </div>
+                    <div class="flex flex-col gap-6 z-10"><div class="neuron hidden-neuron-fw"></div><div class="neuron hidden-neuron-fw"></div><div class="neuron hidden-neuron-fw"></div></div>
+                    <div class="flex flex-col gap-12 z-10"><div class="neuron output-neuron-fw text-2xl font-bold">?</div></div>
+                </div>
+            </div>
+
+            <!-- Vis 9: Backpropagation -->
+            <div id="vis-9" class="vis-layer absolute inset-8 flex flex-col items-center justify-center transition-all duration-700 opacity-0 z-0 pointer-events-none">
+                <div class="relative w-full max-w-2xl h-[500px] flex items-center justify-between" id="nn-container-bw">
+                    <canvas id="nnCanvasBw" class="absolute inset-0 z-0"></canvas>
+                    <div class="flex flex-col gap-12 z-10">
+                        <div class="neuron input-neuron-bw border-slate-600">x1</div>
+                        <div class="neuron input-neuron-bw border-slate-600">x2</div>
+                    </div>
+                    <div class="flex flex-col gap-6 z-10"><div class="neuron hidden-neuron-bw border-slate-600"></div><div class="neuron hidden-neuron-bw border-slate-600"></div><div class="neuron hidden-neuron-bw border-slate-600"></div></div>
+                    <div class="flex flex-col gap-12 z-10 pointer-events-auto">
+                        <button class="neuron bg-red-500/20 border-red-500 text-red-300 font-bold hover:bg-red-500 hover:text-white transition" onclick="fireNetworkBw()">Err</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Vis 10: Computer Vision -->
+            <div id="vis-10" class="vis-layer absolute inset-8 flex items-center justify-center transition-all duration-700 opacity-0 z-0 pointer-events-none">
+                <div class="bg-[#1e293b] p-8 rounded-3xl border border-slate-700 w-full max-w-3xl flex items-center justify-between">
+                    <div class="w-24 h-24 bg-slate-800 rounded-xl border-2 border-slate-600 flex items-center justify-center text-4xl">🐱</div>
+                    <div class="text-slate-600">→</div>
+                    <div class="w-24 h-24 bg-slate-900 border-2 border-indigo-500 flex flex-col p-2 gap-1 justify-center relative"><div class="w-12 h-1 bg-white absolute top-6 left-2 rotate-45"></div><div class="w-1 h-12 bg-white absolute left-10 top-4"></div></div>
+                    <div class="text-slate-600">→</div>
+                    <div class="w-20 h-20 bg-pink-500/20 rounded-full border-4 border-pink-500 flex items-center justify-center"><span class="text-white font-black text-xs">CHAT</span></div>
+                </div>
+            </div>
+
+            <!-- Vis 11: NLP -->
+            <div id="vis-11" class="vis-layer absolute inset-8 flex items-center justify-center transition-all duration-700 opacity-0 z-0 pointer-events-none">
+                <div class="w-full h-[80%] bg-[#1e293b] rounded-2xl p-6 shadow-2xl border border-slate-700 relative"><canvas id="nlpChart"></canvas></div>
             </div>
 
         </section>
     </main>
-
     <script src="app.js"></script>
 </body>
 </html>
