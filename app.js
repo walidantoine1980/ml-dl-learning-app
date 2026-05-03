@@ -41,9 +41,10 @@ function activateVisual(stepId) {
             
             // Triggers
             if(stepId === 1) triggerVennAnimation();
-            if(stepId === 6 && clusteringChart) resetKMeansAnimation();
-            if(stepId === 8) drawNNConnectionsFw();
-            if(stepId === 9) drawNNConnectionsBw();
+            if(stepId === 6 && typeof resetKMeansAnimation === 'function') resetKMeansAnimation();
+            if(stepId === 8 && typeof drawNNConnectionsFw === 'function') drawNNConnectionsFw();
+            if(stepId === 9 && typeof drawNNConnectionsBw === 'function') drawNNConnectionsBw();
+            if(stepId === 12) updateMedicalDiagnosis();
             
         } else {
             layer.classList.remove('opacity-100', 'pointer-events-auto');
@@ -100,7 +101,7 @@ updateRegressionLine();
 // ==========================================
 const ctxLoss = document.getElementById('lossChart').getContext('2d');
 const lossData = [];
-for(let w = -5; w <= 5; w+=0.5) lossData.push({x: w, y: w*w}); // Simple parabola
+for(let w = -5; w <= 5; w+=0.5) lossData.push({x: w, y: w*w});
 
 new Chart(ctxLoss, {
     type: 'line',
@@ -109,10 +110,7 @@ new Chart(ctxLoss, {
     },
     options: {
         responsive: true, maintainAspectRatio: false,
-        scales: {
-            x: { title: {display: true, text: 'Poids w', color:'#94a3b8'}, grid: {color: '#334155'} },
-            y: { title: {display: true, text: 'Erreur', color:'#94a3b8'}, grid: {color: '#334155'}, display: false }
-        },
+        scales: { x: { title: {display: true, text: 'Poids w', color:'#94a3b8'}, grid: {color: '#334155'} }, y: { display: false } },
         plugins: { legend: { display: false } }
     }
 });
@@ -140,9 +138,7 @@ let gradChart = new Chart(ctxGrad, {
 lrSlider.addEventListener('input', () => lrValue.textContent = lrSlider.value);
 btnGrad.addEventListener('click', () => {
     let lr = parseFloat(lrSlider.value);
-    // Gradient step: w = w - lr * derivative. Derivative of w^2 is 2w.
     gradW = gradW - lr * (2 * gradW);
-    // Limit to prevent chart explosion
     if(gradW > 6) gradW = 6; if(gradW < -6) gradW = -6;
     
     gradChart.data.datasets[1].data = [{x: gradW, y: gradW*gradW}];
@@ -150,7 +146,7 @@ btnGrad.addEventListener('click', () => {
     
     if(Math.abs(gradW) < 0.1) {
         btnGrad.textContent = "Minimum atteint !";
-        setTimeout(() => { gradW = -4.5; btnGrad.textContent = "Relâcher la bille"; gradChart.data.datasets[1].data = [{x: gradW, y: gradW*gradW}]; gradChart.update(); }, 2000);
+        setTimeout(() => { gradW = -4.5; btnGrad.textContent = "Lâcher la bille"; gradChart.data.datasets[1].data = [{x: gradW, y: gradW*gradW}]; gradChart.update(); }, 2000);
     }
 });
 
@@ -174,14 +170,14 @@ new Chart(ctxClass, {
 // VIS 6: CLUSTERING
 // ==========================================
 const ctxCluster = document.getElementById('clusteringChart').getContext('2d');
-const rawData = [
+const rawDataCluster = [
     ...Array.from({length: 15}, () => ({x: 20+Math.random()*20, y: 20+Math.random()*20})),
     ...Array.from({length: 15}, () => ({x: 70+Math.random()*20, y: 30+Math.random()*20})),
     ...Array.from({length: 15}, () => ({x: 45+Math.random()*20, y: 70+Math.random()*20}))
 ];
 
 let clusteringChart = new Chart(ctxCluster, {
-    type: 'scatter', data: { datasets: [{ label: 'Clients', data: rawData, backgroundColor: '#94a3b8', pointRadius: 6 }] },
+    type: 'scatter', data: { datasets: [{ label: 'Clients', data: rawDataCluster, backgroundColor: '#94a3b8', pointRadius: 6 }] },
     options: { responsive: true, maintainAspectRatio: false, scales: { x: {min: 0, max: 100}, y: {min: 0, max: 100} }, plugins: { legend: { display: false } } }
 });
 
@@ -190,9 +186,9 @@ document.getElementById('runKmeansBtn').addEventListener('click', () => {
     kmeansStep++;
     if(kmeansStep === 1) {
         clusteringChart.data.datasets = [
-            { label: 'Groupe 1', data: rawData.slice(0,15), backgroundColor: '#3b82f6', pointRadius: 6 },
-            { label: 'Groupe 2', data: rawData.slice(15,30), backgroundColor: '#ec4899', pointRadius: 6 },
-            { label: 'Groupe 3', data: rawData.slice(30,45), backgroundColor: '#eab308', pointRadius: 6 }
+            { label: 'Groupe 1', data: rawDataCluster.slice(0,15), backgroundColor: '#3b82f6', pointRadius: 6 },
+            { label: 'Groupe 2', data: rawDataCluster.slice(15,30), backgroundColor: '#ec4899', pointRadius: 6 },
+            { label: 'Groupe 3', data: rawDataCluster.slice(30,45), backgroundColor: '#eab308', pointRadius: 6 }
         ];
         clusteringChart.update();
         document.getElementById('runKmeansBtn').textContent = 'Réinitialiser';
@@ -200,7 +196,7 @@ document.getElementById('runKmeansBtn').addEventListener('click', () => {
         kmeansStep = 0; resetKMeansAnimation(); document.getElementById('runKmeansBtn').textContent = 'Étape Suivante';
     }
 });
-function resetKMeansAnimation() { clusteringChart.data.datasets = [{ label: 'Clients', data: rawData, backgroundColor: '#94a3b8', pointRadius: 6 }]; clusteringChart.update(); }
+function resetKMeansAnimation() { clusteringChart.data.datasets = [{ label: 'Clients', data: rawDataCluster, backgroundColor: '#94a3b8', pointRadius: 6 }]; clusteringChart.update(); }
 
 // ==========================================
 // VIS 7: OVERFITTING
@@ -226,72 +222,42 @@ document.querySelectorAll('.fit-btn').forEach(btn => {
         if(type === 'under') { lineData = [{x: 0, y: 1}, {x: 8, y: 9}]; color = '#64748b'; tension = 0; }
         if(type === 'good') { lineData = [{x: 0, y: 1}, {x: 2, y: 3}, {x: 4, y: 4.5}, {x: 6, y: 7.5}, {x: 8, y: 8}]; color = '#22c55e'; tension = 0.4; }
         if(type === 'over') { lineData = [{x:0,y:0}, {x:1,y:2}, {x:1.5,y:0}, {x:2,y:3}, {x:2.5,y:7}, {x:3,y:5}, {x:3.5,y:1}, {x:4,y:4}, {x:4.5,y:8}, {x:5,y:6}, {x:5.5,y:2}, {x:6,y:8}, {x:6.5,y:10}, {x:7,y:7}, {x:8,y:0}]; color = '#ef4444'; tension = 0.4; }
-        
-        overfitChart.data.datasets[1].data = lineData;
-        overfitChart.data.datasets[1].borderColor = color;
-        overfitChart.data.datasets[1].tension = tension;
-        overfitChart.update();
+        overfitChart.data.datasets[1].data = lineData; overfitChart.data.datasets[1].borderColor = color; overfitChart.data.datasets[1].tension = tension; overfitChart.update();
     });
 });
-// Init good fit
 document.querySelector('.fit-btn[data-fit="good"]').click();
 
 // ==========================================
-// VIS 8: NN FORWARD
+// VIS 8 & 9: NEURAL NETWORK (FW & BW)
 // ==========================================
-const nnCanvasFw = document.getElementById('nnCanvasFw');
-const nnCtxFw = nnCanvasFw.getContext('2d');
-
 function drawNNConnectionsFw() {
-    const container = document.getElementById('nn-container-fw');
-    if(!container) return;
+    const nnCanvasFw = document.getElementById('nnCanvasFw'); const nnCtxFw = nnCanvasFw.getContext('2d');
+    const container = document.getElementById('nn-container-fw'); if(!container) return;
     nnCanvasFw.width = container.clientWidth; nnCanvasFw.height = container.clientHeight;
-    const inputs = document.querySelectorAll('.input-neuron');
-    const hiddens = document.querySelectorAll('.hidden-neuron-fw');
-    const outputs = document.querySelectorAll('.output-neuron-fw');
-
-    nnCtxFw.clearRect(0, 0, nnCanvasFw.width, nnCanvasFw.height);
-    nnCtxFw.lineWidth = 1; nnCtxFw.strokeStyle = 'rgba(51, 65, 85, 0.5)';
+    const inputs = document.querySelectorAll('.input-neuron'); const hiddens = document.querySelectorAll('.hidden-neuron-fw'); const outputs = document.querySelectorAll('.output-neuron-fw');
+    nnCtxFw.clearRect(0, 0, nnCanvasFw.width, nnCanvasFw.height); nnCtxFw.lineWidth = 1; nnCtxFw.strokeStyle = 'rgba(51, 65, 85, 0.5)';
     drawLines(inputs, hiddens, nnCtxFw, nnCanvasFw); drawLines(hiddens, outputs, nnCtxFw, nnCanvasFw);
 }
 
 window.fireNetworkFw = function(inputIndex) {
-    const inputs = document.querySelectorAll('.input-neuron');
-    const hiddens = document.querySelectorAll('.hidden-neuron-fw');
-    const outputs = document.querySelectorAll('.output-neuron-fw');
-    
-    inputs.forEach(el => el.classList.remove('active-purple', 'active-pink'));
-    inputs[inputIndex].classList.add('active-purple');
-
+    const inputs = document.querySelectorAll('.input-neuron'); const hiddens = document.querySelectorAll('.hidden-neuron-fw'); const outputs = document.querySelectorAll('.output-neuron-fw');
+    inputs.forEach(el => el.classList.remove('active-purple', 'active-pink')); inputs[inputIndex].classList.add('active-purple');
     setTimeout(() => { hiddens.forEach(el => { el.classList.add('active-purple'); el.textContent = (Math.random()).toFixed(1); }); }, 400);
     setTimeout(() => { hiddens.forEach(el => el.classList.remove('active-purple')); outputs.forEach(el => { el.classList.add('active-pink'); el.textContent = '1.0'; }); }, 1000);
     setTimeout(() => { outputs.forEach(el => el.classList.remove('active-pink')); inputs[inputIndex].classList.remove('active-purple'); hiddens.forEach(el => el.textContent = ''); outputs.forEach(el => el.textContent = '?'); }, 2500);
 };
 
-// ==========================================
-// VIS 9: NN BACKWARD (BACKPROPAGATION)
-// ==========================================
-const nnCanvasBw = document.getElementById('nnCanvasBw');
-const nnCtxBw = nnCanvasBw.getContext('2d');
-
 function drawNNConnectionsBw() {
-    const container = document.getElementById('nn-container-bw');
-    if(!container) return;
+    const nnCanvasBw = document.getElementById('nnCanvasBw'); const nnCtxBw = nnCanvasBw.getContext('2d');
+    const container = document.getElementById('nn-container-bw'); if(!container) return;
     nnCanvasBw.width = container.clientWidth; nnCanvasBw.height = container.clientHeight;
-    const inputs = document.querySelectorAll('.input-neuron-bw');
-    const hiddens = document.querySelectorAll('.hidden-neuron-bw');
-    const errNode = document.querySelectorAll('#vis-9 .bg-red-500\\/20');
-
-    nnCtxBw.clearRect(0, 0, nnCanvasBw.width, nnCanvasBw.height);
-    nnCtxBw.lineWidth = 1; nnCtxBw.strokeStyle = 'rgba(51, 65, 85, 0.5)';
+    const inputs = document.querySelectorAll('.input-neuron-bw'); const hiddens = document.querySelectorAll('.hidden-neuron-bw'); const errNode = document.querySelectorAll('#vis-9 .bg-red-500\\/20');
+    nnCtxBw.clearRect(0, 0, nnCanvasBw.width, nnCanvasBw.height); nnCtxBw.lineWidth = 1; nnCtxBw.strokeStyle = 'rgba(51, 65, 85, 0.5)';
     drawLines(inputs, hiddens, nnCtxBw, nnCanvasBw); drawLines(hiddens, errNode, nnCtxBw, nnCanvasBw);
 }
 
 window.fireNetworkBw = function() {
-    const inputs = document.querySelectorAll('.input-neuron-bw');
-    const hiddens = document.querySelectorAll('.hidden-neuron-bw');
-    
-    // Reverse animation
+    const inputs = document.querySelectorAll('.input-neuron-bw'); const hiddens = document.querySelectorAll('.hidden-neuron-bw');
     setTimeout(() => { hiddens.forEach(el => { el.style.borderColor = '#ef4444'; el.style.boxShadow = '0 0 20px #ef4444'; el.textContent = '-0.1'; }); }, 400);
     setTimeout(() => { hiddens.forEach(el => { el.style.borderColor = ''; el.style.boxShadow = ''; }); inputs.forEach(el => { el.style.borderColor = '#ef4444'; el.style.boxShadow = '0 0 20px #ef4444'; }); }, 1000);
     setTimeout(() => { inputs.forEach(el => { el.style.borderColor = ''; el.style.boxShadow = ''; }); hiddens.forEach(el => el.textContent = ''); }, 2000);
@@ -308,7 +274,6 @@ function drawLines(fromNodes, toNodes, ctx, canvas) {
     });
 }
 window.addEventListener('resize', () => { drawNNConnectionsFw(); drawNNConnectionsBw(); });
-
 
 // ==========================================
 // VIS 11: NLP
@@ -340,4 +305,151 @@ new Chart(ctxNlp, {
     }
 });
 
+
+// ==========================================
+// VIS 12: MEDICAL DIAGNOSIS (ML PLAYGROUND)
+// ==========================================
+const ageSlider = document.getElementById('ageSlider');
+const cholSlider = document.getElementById('cholSlider');
+const bpSlider = document.getElementById('bpSlider');
+const medGaugeFill = document.getElementById('medGaugeFill');
+const medScore = document.getElementById('medScore');
+const medLabel = document.getElementById('medLabel');
+
+function updateMedicalDiagnosis() {
+    const age = parseInt(ageSlider.value);
+    const chol = parseInt(cholSlider.value);
+    const bp = parseInt(bpSlider.value);
+
+    document.getElementById('ageVal').textContent = age + " ans";
+    document.getElementById('cholVal').textContent = chol;
+    document.getElementById('bpVal').textContent = bp;
+
+    // Simulated Logistic Regression Weights
+    // Formula: z = w1*age + w2*chol + w3*bp + bias
+    // We normalize ranges to keep z reasonable
+    const ageNorm = (age - 20) / 70; // 0 to 1
+    const cholNorm = (chol - 100) / 250; // 0 to 1
+    const bpNorm = (bp - 80) / 120; // 0 to 1
+
+    const z = (ageNorm * 3.5) + (cholNorm * 4.0) + (bpNorm * 2.5) - 4.5;
+    
+    // Sigmoid function
+    const probability = 1 / (1 + Math.exp(-z));
+    const percentage = Math.round(probability * 100);
+
+    medScore.textContent = percentage + "%";
+
+    // Gauge rotation mapping (0% -> 0deg, 100% -> 180deg)
+    const rotation = percentage * 1.8;
+    medGaugeFill.style.transform = `rotate(${rotation}deg)`;
+
+    // Color logic
+    if (percentage < 30) {
+        medGaugeFill.style.borderColor = "#22c55e"; // green
+        medLabel.textContent = "Risque Faible";
+        medLabel.className = "text-sm font-bold uppercase tracking-wider text-green-400";
+    } else if (percentage < 70) {
+        medGaugeFill.style.borderColor = "#eab308"; // yellow
+        medLabel.textContent = "Risque Modéré";
+        medLabel.className = "text-sm font-bold uppercase tracking-wider text-yellow-400";
+    } else {
+        medGaugeFill.style.borderColor = "#ef4444"; // red
+        medLabel.textContent = "Risque Élevé";
+        medLabel.className = "text-sm font-bold uppercase tracking-wider text-red-400";
+    }
+}
+
+ageSlider.addEventListener('input', updateMedicalDiagnosis);
+cholSlider.addEventListener('input', updateMedicalDiagnosis);
+bpSlider.addEventListener('input', updateMedicalDiagnosis);
+
+
+// ==========================================
+// VIS 13: SENTIMENT ANALYSIS (DL PLAYGROUND)
+// ==========================================
+const analyzeBtn = document.getElementById('analyzeBtn');
+const nlpInput = document.getElementById('nlpInput');
+const nlpResult = document.getElementById('nlpResult');
+const nlpHighlighted = document.getElementById('nlpHighlighted');
+
+// Fake Sentiment Dictionary
+const positiveWords = ['incroyable', 'super', 'génial', 'bien', 'bon', 'bonne', 'parfait', 'excellent', 'adore', 'beau', 'magnifique', 'top', 'rapide', 'efficace'];
+const negativeWords = ['catastrophique', 'nul', 'mauvais', 'faible', 'lent', 'horrible', 'déçu', 'problème', 'bug', 'pire', 'cher', 'inutile', 'déteste'];
+
+analyzeBtn.addEventListener('click', () => {
+    const text = nlpInput.value.trim();
+    if (!text) return;
+
+    nlpResult.classList.remove('hidden');
+    
+    // Process text
+    let posCount = 0;
+    let negCount = 0;
+    let totalWords = 0;
+
+    // We split by punctuation and spaces, but keep punctuation in output using regex
+    const words = text.split(/(\b[^\s]+\b)/); 
+    
+    let highlightedHTML = "";
+
+    words.forEach(w => {
+        if (!w.trim() || w.length === 1) {
+            highlightedHTML += w;
+            return;
+        }
+        
+        totalWords++;
+        const lowerW = w.toLowerCase();
+        
+        let isPos = false;
+        let isNeg = false;
+        
+        positiveWords.forEach(pw => { if (lowerW.includes(pw)) isPos = true; });
+        negativeWords.forEach(nw => { if (lowerW.includes(nw)) isNeg = true; });
+
+        if (isPos) {
+            posCount++;
+            highlightedHTML += `<span class="bg-green-500/20 text-green-400 px-1 rounded mx-0.5 font-bold">${w}</span>`;
+        } else if (isNeg) {
+            negCount++;
+            highlightedHTML += `<span class="bg-red-500/20 text-red-400 px-1 rounded mx-0.5 font-bold">${w}</span>`;
+        } else {
+            highlightedHTML += w;
+        }
+    });
+
+    nlpHighlighted.innerHTML = highlightedHTML;
+
+    // Calculate scores
+    let posScore = 33;
+    let negScore = 33;
+    let neuScore = 34;
+
+    if (posCount > 0 || negCount > 0) {
+        // Simple heuristic for demo
+        const totalSentiments = posCount + negCount;
+        const posRatio = posCount / totalSentiments;
+        const negRatio = negCount / totalSentiments;
+
+        // Base confidence based on how many sentiment words relative to total words
+        const confidence = Math.min((totalSentiments / Math.max(1, totalWords)) * 2, 0.8); 
+        
+        posScore = Math.round(posRatio * confidence * 100) + Math.round((1-confidence)*33);
+        negScore = Math.round(negRatio * confidence * 100) + Math.round((1-confidence)*33);
+        neuScore = 100 - posScore - negScore;
+    }
+
+    // Update bars
+    document.getElementById('nlpNegBar').style.width = negScore + "%";
+    document.getElementById('nlpNeuBar').style.width = neuScore + "%";
+    document.getElementById('nlpPosBar').style.width = posScore + "%";
+
+    document.getElementById('nlpNegScore').textContent = negScore + "%";
+    document.getElementById('nlpNeuScore').textContent = neuScore + "%";
+    document.getElementById('nlpPosScore').textContent = posScore + "%";
+});
+
+
+// Initialization
 activateVisual(1);

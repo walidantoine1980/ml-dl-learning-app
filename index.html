@@ -25,7 +25,7 @@
         </div>
         <div class="text-sm font-medium text-slate-400 flex items-center gap-2">
             <span class="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>
-            Défilez pour explorer (11 Chapitres)
+            Défilez pour explorer (13 Chapitres)
         </div>
     </header>
 
@@ -35,7 +35,7 @@
         <section class="w-[45%] h-full overflow-y-auto custom-scrollbar relative z-10 bg-[#0f172a] shadow-2xl border-r border-slate-800" id="scroll-container">
             <div class="h-[20vh]"></div>
 
-            <!-- Step 1: Intro -->
+            <!-- 1 to 11 (Existing) -->
             <div class="step-content p-12 min-h-[70vh] flex flex-col justify-center transition-opacity duration-500" data-step="1">
                 <div class="tag mb-6">Chapitre 1</div>
                 <h2 class="text-4xl font-extrabold text-white mb-6">Démystifier l'I.A.</h2>
@@ -49,111 +49,95 @@
                 </div>
             </div>
 
-            <!-- Step 2: ML Regression -->
             <div class="step-content p-12 min-h-[80vh] flex flex-col justify-center transition-opacity duration-500" data-step="2">
                 <div class="tag bg-purple-500/20 text-purple-400 mb-6">Machine Learning</div>
                 <h2 class="text-4xl font-extrabold text-white mb-6">La Régression</h2>
                 <p class="text-lg leading-relaxed mb-6">Prédire une valeur continue (ex: Prix d'une maison) via la fonction affine :</p>
                 <div class="math-block text-2xl text-center my-8 text-white">$$ \hat{y} = w \cdot x + b $$</div>
-                <div class="interactive-prompt bg-indigo-500/10 border border-indigo-500/30 p-4 rounded-xl text-indigo-300">
-                    👉 <strong>À vous de jouer :</strong> Modifiez les paramètres $w$ et $b$ à droite pour ajuster la droite aux données.
-                </div>
+                <div class="interactive-prompt bg-indigo-500/10 border border-indigo-500/30 p-4 rounded-xl text-indigo-300">👉 <strong>À vous de jouer :</strong> Modifiez les paramètres $w$ et $b$ à droite pour ajuster la droite aux données.</div>
             </div>
 
-            <!-- Step 3: Loss Function -->
             <div class="step-content p-12 min-h-[80vh] flex flex-col justify-center transition-opacity duration-500" data-step="3">
                 <div class="tag bg-red-500/20 text-red-400 mb-6">Théorie Mathématique</div>
                 <h2 class="text-4xl font-extrabold text-white mb-6">La Fonction de Coût</h2>
                 <p class="text-lg leading-relaxed mb-6">Pour que la machine apprenne, elle doit savoir <strong>à quel point elle se trompe</strong>. C'est le rôle de la fonction de coût $J(w, b)$.</p>
-                <p class="text-lg leading-relaxed mb-6">L'Erreur Quadratique Moyenne (MSE) calcule la moyenne du carré des écarts entre les vrais prix $y$ et nos prédictions $\hat{y}$ :</p>
-                <div class="math-block text-xl text-center my-6 text-white">
-                    $$ J(w) = \frac{1}{N} \sum_{i=1}^{N} (y_i - \hat{y}_i)^2 $$
-                </div>
-                <div class="interactive-prompt bg-red-500/10 border border-red-500/30 p-4 rounded-xl text-red-300">
-                    👉 <strong>Visualisation :</strong> À droite, observez la parabole de l'erreur. Le but de l'IA est mathématiquement simple : trouver le Poids $w$ qui nous amène tout au fond du bol !
-                </div>
+                <div class="math-block text-xl text-center my-6 text-white">$$ J(w) = \frac{1}{N} \sum_{i=1}^{N} (y_i - \hat{y}_i)^2 $$</div>
+                <div class="interactive-prompt bg-red-500/10 border border-red-500/30 p-4 rounded-xl text-red-300">👉 <strong>Visualisation :</strong> Observez la parabole de l'erreur. Le but de l'IA est de trouver le Poids $w$ qui nous amène tout au fond du bol !</div>
             </div>
 
-            <!-- Step 4: Gradient Descent -->
             <div class="step-content p-12 min-h-[80vh] flex flex-col justify-center transition-opacity duration-500" data-step="4">
                 <div class="tag bg-yellow-500/20 text-yellow-400 mb-6">Théorie Mathématique</div>
                 <h2 class="text-4xl font-extrabold text-white mb-6">La Descente de Gradient</h2>
                 <p class="text-lg leading-relaxed mb-6">L'algorithme absolu du ML. Comment atteindre le fond de la parabole aveuglément ? En calculant la pente (dérivée) et en faisant un pas dans le sens opposé.</p>
-                <div class="math-block text-xl text-center my-6 text-white">
-                    $$ w := w - \alpha \frac{\partial J}{\partial w} $$
-                </div>
-                <p class="text-lg leading-relaxed mb-6">$\alpha$ est le <strong>Taux d'Apprentissage (Learning Rate)</strong>. S'il est trop petit, l'apprentissage est infiniment lent. S'il est trop grand, la bille saute en dehors du bol !</p>
-                <div class="interactive-prompt bg-yellow-500/10 border border-yellow-500/30 p-4 rounded-xl text-yellow-300">
-                    👉 <strong>Simulateur :</strong> Choisissez un $\alpha$ à droite et cliquez sur "Lancer l'apprentissage". Observez la bille converger vers l'optimum.
-                </div>
+                <div class="math-block text-xl text-center my-6 text-white">$$ w := w - \alpha \frac{\partial J}{\partial w} $$</div>
+                <div class="interactive-prompt bg-yellow-500/10 border border-yellow-500/30 p-4 rounded-xl text-yellow-300">👉 <strong>Simulateur :</strong> Choisissez un Learning Rate ($\alpha$) et cliquez sur "Lâcher la bille". Observez la bille converger vers l'optimum.</div>
             </div>
 
-            <!-- Step 5: Classification -->
             <div class="step-content p-12 min-h-[80vh] flex flex-col justify-center transition-opacity duration-500" data-step="5">
                 <div class="tag bg-purple-500/20 text-purple-400 mb-6">Machine Learning</div>
                 <h2 class="text-4xl font-extrabold text-white mb-6">La Classification</h2>
                 <p class="text-lg leading-relaxed mb-6">Séparer des données en catégories (ex: Spam vs Non-Spam) à l'aide d'une frontière de décision mathématique.</p>
-                <div class="math-block text-xl text-center my-6 text-white">
-                    $$ P(y=1) = \frac{1}{1 + e^{-(wx+b)}} $$
-                </div>
             </div>
 
-            <!-- Step 6: Clustering -->
             <div class="step-content p-12 min-h-[80vh] flex flex-col justify-center transition-opacity duration-500" data-step="6">
                 <div class="tag bg-purple-500/20 text-purple-400 mb-6">Machine Learning</div>
                 <h2 class="text-4xl font-extrabold text-white mb-6">Le Clustering (K-Means)</h2>
-                <p class="text-lg leading-relaxed mb-6">Apprentissage non-supervisé : Trouver des structures cachées sans labels (ex: Segmentation client).</p>
-                <div class="interactive-prompt bg-indigo-500/10 border border-indigo-500/30 p-4 rounded-xl text-indigo-300">
-                    👉 <strong>Animation :</strong> Suivez les centroïdes qui regroupent les clients par couleurs.
-                </div>
+                <p class="text-lg leading-relaxed mb-6">Apprentissage non-supervisé : Trouver des structures cachées sans labels.</p>
             </div>
 
-            <!-- Step 7: Overfitting -->
             <div class="step-content p-12 min-h-[80vh] flex flex-col justify-center transition-opacity duration-500" data-step="7">
                 <div class="tag bg-orange-500/20 text-orange-400 mb-6">Théorie Machine Learning</div>
                 <h2 class="text-4xl font-extrabold text-white mb-6">Le Surapprentissage</h2>
-                <p class="text-lg leading-relaxed mb-6">L'ennemi juré de l'IA : l'<strong>Overfitting</strong>. Cela se produit quand un modèle est "trop complexe" et apprend les données par cœur, incluant le bruit, au lieu d'apprendre la tendance.</p>
-                <div class="interactive-prompt bg-orange-500/10 border border-orange-500/30 p-4 rounded-xl text-orange-300">
-                    👉 <strong>Comparaison :</strong> À droite, comparez un modèle sous-appris (ligne droite), un bon modèle (courbe verte), et un modèle sur-appris (courbe rouge chaotique qui passe par chaque point mais prédira très mal les données futures).
-                </div>
+                <p class="text-lg leading-relaxed mb-6">Le plus grand piège du ML : Apprendre les données par cœur au lieu de comprendre la tendance.</p>
             </div>
 
-            <!-- Step 8: Deep Learning NN -->
             <div class="step-content p-12 min-h-[80vh] flex flex-col justify-center transition-opacity duration-500" data-step="8">
                 <div class="tag bg-pink-500/20 text-pink-400 mb-6">Deep Learning</div>
                 <h2 class="text-4xl font-extrabold text-white mb-6">Les Réseaux de Neurones</h2>
-                <p class="text-lg leading-relaxed mb-6">Empiler des couches de neurones pour modéliser des fonctions extrêmement non-linéaires.</p>
-                <div class="math-block text-xl text-center text-white my-4">
-                    $$ a = \text{ReLU}\left(\sum w_i x_i + b\right) $$
-                </div>
+                <p class="text-lg leading-relaxed mb-6">Empiler des couches de neurones pour modéliser des fonctions non-linéaires complexes.</p>
             </div>
 
-            <!-- Step 9: Backpropagation -->
             <div class="step-content p-12 min-h-[80vh] flex flex-col justify-center transition-opacity duration-500" data-step="9">
                 <div class="tag bg-red-500/20 text-red-400 mb-6">Théorie Deep Learning</div>
                 <h2 class="text-4xl font-extrabold text-white mb-6">La Rétropropagation</h2>
-                <p class="text-lg leading-relaxed mb-6">Comment régler 100 millions de poids simultanément ? C'est le triomphe algorithmique de la <strong>Backpropagation</strong> basée sur la règle de dérivation en chaîne (Chain Rule).</p>
-                <div class="math-block text-lg text-center text-white my-4">
-                    $$ \frac{\partial L}{\partial w_{ij}} = \frac{\partial L}{\partial a_j} \cdot \frac{\partial a_j}{\partial z_j} \cdot \frac{\partial z_j}{\partial w_{ij}} $$
-                </div>
-                <p class="text-lg leading-relaxed mb-6">L'erreur calculée à la sortie "remonte" le réseau à l'envers, ajustant chaque poids de façon optimale.</p>
-                <div class="interactive-prompt bg-red-500/10 border border-red-500/30 p-4 rounded-xl text-red-300">
-                    👉 <strong>Simulateur :</strong> Cliquez sur le bouton "Calculer l'Erreur" à droite pour déclencher une vague d'ajustement rouge qui remonte vers la source !
-                </div>
+                <p class="text-lg leading-relaxed mb-6">Comment régler 100 millions de poids simultanément ? L'erreur calculée à la sortie "remonte" le réseau à l'envers, ajustant chaque poids de façon optimale grâce à la dérivation en chaîne.</p>
             </div>
 
-            <!-- Step 10: Vision -->
             <div class="step-content p-12 min-h-[80vh] flex flex-col justify-center transition-opacity duration-500" data-step="10">
                 <div class="tag bg-pink-500/20 text-pink-400 mb-6">Deep Learning</div>
                 <h2 class="text-4xl font-extrabold text-white mb-6">Computer Vision (CNN)</h2>
-                <p class="text-lg leading-relaxed mb-6">Extraction de caractéristiques hiérarchiques via Convolution. Pixels $\rightarrow$ Bords $\rightarrow$ Formes $\rightarrow$ Objets.</p>
+                <p class="text-lg leading-relaxed mb-6">Extraction hiérarchique : Pixels $\rightarrow$ Bords $\rightarrow$ Formes $\rightarrow$ Objets.</p>
             </div>
 
-            <!-- Step 11: NLP -->
             <div class="step-content p-12 min-h-[80vh] flex flex-col justify-center transition-opacity duration-500" data-step="11">
                 <div class="tag bg-pink-500/20 text-pink-400 mb-6">Deep Learning</div>
                 <h2 class="text-4xl font-extrabold text-white mb-6">NLP (Word Embeddings)</h2>
                 <p class="text-lg leading-relaxed mb-6">Représentation spatiale du langage. [Roi] - [Homme] + [Femme] = [Reine].</p>
+            </div>
+
+            <!-- Step 12: Lab ML -->
+            <div class="step-content p-12 min-h-[80vh] flex flex-col justify-center transition-opacity duration-500" data-step="12">
+                <div class="tag bg-teal-500/20 text-teal-400 mb-6">Le Laboratoire : Cas Pratique ML</div>
+                <h2 class="text-4xl font-extrabold text-white mb-6">Diagnostic Médical 🩺</h2>
+                <p class="text-lg leading-relaxed mb-6">Assez de théorie ! Transformez-vous en médecin. Vous allez utiliser un modèle de <strong>Régression Logistique Multiple</strong>.</p>
+                <p class="text-lg leading-relaxed mb-6">Au lieu d'une seule variable, notre modèle prend 3 caractéristiques ($x_1, x_2, x_3$) et calcule la probabilité qu'un patient développe une maladie cardiaque.</p>
+                <div class="math-block text-xl text-center text-white my-6">
+                    $$ \text{Risque} = \sigma(w_1\text{Âge} + w_2\text{Chol} + w_3\text{PA} + b) $$
+                </div>
+                <div class="interactive-prompt bg-teal-500/10 border border-teal-500/30 p-4 rounded-xl text-teal-300">
+                    👉 <strong>Votre Mission :</strong> Manipulez le dossier du patient à droite (Curseurs) et regardez l'IA recalculer instantanément le risque cardiaque sur la jauge !
+                </div>
+            </div>
+
+            <!-- Step 13: Lab DL -->
+            <div class="step-content p-12 min-h-[80vh] flex flex-col justify-center transition-opacity duration-500" data-step="13">
+                <div class="tag bg-indigo-500/20 text-indigo-400 mb-6">Le Laboratoire : Cas Pratique DL</div>
+                <h2 class="text-4xl font-extrabold text-white mb-6">Analyse de Sentiment 📝</h2>
+                <p class="text-lg leading-relaxed mb-6">Découvrons comment une IA de Traitement du Langage (NLP) "ressent" nos émotions à la lecture d'un texte.</p>
+                <p class="text-lg leading-relaxed mb-6">Cette IA va diviser votre phrase (Tokenization), analyser les poids sémantiques (Embeddings), et simuler un réseau de neurones pour sortir une polarité : Positif, Neutre ou Négatif.</p>
+                <div class="interactive-prompt bg-indigo-500/10 border border-indigo-500/30 p-4 rounded-xl text-indigo-300">
+                    👉 <strong>Votre Mission :</strong> Écrivez votre propre critique (ex: de film ou de produit) dans la zone de texte à droite. Observez l'IA surligner les mots percutants et rendre son verdict en temps réel !
+                </div>
             </div>
 
             <div class="h-[50vh]"></div>
@@ -162,122 +146,98 @@
         <!-- Right: Sticky Visualizations -->
         <section class="w-[55%] h-full bg-[#0b1120] relative flex items-center justify-center p-8 overflow-hidden">
             
-            <!-- Vis 1: Venn Diagram -->
-            <div id="vis-1" class="vis-layer absolute inset-8 flex items-center justify-center transition-all duration-700 opacity-100 z-10">
-                <div class="venn-diagram relative w-full max-w-md aspect-square">
-                    <div class="absolute inset-0 rounded-full border-2 border-slate-600 flex items-start justify-center pt-8 text-xl font-bold text-slate-500 transition-all duration-1000" id="venn-ia">Intelligence Artificielle</div>
-                    <div class="absolute inset-[15%] rounded-full border-2 border-purple-500/50 bg-purple-500/10 flex items-start justify-center pt-8 text-lg font-bold text-purple-400 transition-all duration-1000" id="venn-ml">Machine Learning</div>
-                    <div class="absolute inset-[30%] rounded-full border-2 border-pink-500/50 bg-pink-500/10 flex items-center justify-center text-base font-bold text-pink-400 transition-all duration-1000 text-center px-4" id="venn-dl">Deep Learning</div>
-                </div>
-            </div>
+            <!-- Vis 1 to 11 remain the same -->
+            <div id="vis-1" class="vis-layer absolute inset-8 flex items-center justify-center transition-all duration-700 opacity-100 z-10"><div class="venn-diagram relative w-full max-w-md aspect-square"><div class="absolute inset-0 rounded-full border-2 border-slate-600 flex items-start justify-center pt-8 text-xl font-bold text-slate-500 transition-all duration-1000" id="venn-ia">Intelligence Artificielle</div><div class="absolute inset-[15%] rounded-full border-2 border-purple-500/50 bg-purple-500/10 flex items-start justify-center pt-8 text-lg font-bold text-purple-400 transition-all duration-1000" id="venn-ml">Machine Learning</div><div class="absolute inset-[30%] rounded-full border-2 border-pink-500/50 bg-pink-500/10 flex items-center justify-center text-base font-bold text-pink-400 transition-all duration-1000 text-center px-4" id="venn-dl">Deep Learning</div></div></div>
+            <div id="vis-2" class="vis-layer absolute inset-8 flex flex-col transition-all duration-700 opacity-0 z-0 pointer-events-none"><div class="flex-1 bg-[#1e293b] rounded-2xl p-4 shadow-inner relative w-full h-[60%]"><canvas id="regressionChart"></canvas></div><div class="mt-6 bg-[#1e293b] p-6 rounded-2xl border border-slate-700 w-full pointer-events-auto"><div class="mb-6"><div class="flex justify-between mb-2"><label class="text-indigo-400 font-bold">Poids (w)</label><span id="wValue" class="font-mono text-white">1.00</span></div><input type="range" id="wSlider" min="-5" max="5" step="0.1" value="-2" class="w-full slider-indigo"></div><div><div class="flex justify-between mb-2"><label class="text-pink-400 font-bold">Biais (b)</label><span id="bValue" class="font-mono text-white">0.00</span></div><input type="range" id="bSlider" min="-50" max="150" step="1" value="100" class="w-full slider-pink"></div></div></div>
+            <div id="vis-3" class="vis-layer absolute inset-8 flex items-center justify-center transition-all duration-700 opacity-0 z-0 pointer-events-none"><div class="w-full h-[80%] bg-[#1e293b] rounded-2xl p-6 shadow-2xl border border-slate-700 relative"><h3 class="absolute top-6 left-6 text-white font-bold text-lg z-10">La courbe d'Erreur J(w)</h3><canvas id="lossChart"></canvas></div></div>
+            <div id="vis-4" class="vis-layer absolute inset-8 flex flex-col transition-all duration-700 opacity-0 z-0 pointer-events-none"><div class="flex-1 bg-[#1e293b] rounded-2xl p-4 shadow-inner relative w-full h-[60%]"><canvas id="gradientChart"></canvas></div><div class="mt-6 bg-[#1e293b] p-6 rounded-2xl border border-slate-700 w-full pointer-events-auto flex items-center gap-6"><div class="flex-1"><div class="flex justify-between mb-2"><label class="text-yellow-400 font-bold">Learning Rate ($\alpha$)</label><span id="lrValue" class="font-mono text-white">0.1</span></div><input type="range" id="lrSlider" min="0.01" max="1.5" step="0.01" value="0.1" class="w-full slider-indigo"></div><button id="runGradientBtn" class="bg-yellow-500 hover:bg-yellow-400 text-black font-bold py-3 px-6 rounded-xl shadow-lg transition">Lâcher la bille</button></div></div>
+            <div id="vis-5" class="vis-layer absolute inset-8 flex items-center justify-center transition-all duration-700 opacity-0 z-0 pointer-events-none"><div class="w-full h-[80%] bg-[#1e293b] rounded-2xl p-6 shadow-2xl border border-slate-700 relative"><canvas id="classificationChart"></canvas></div></div>
+            <div id="vis-6" class="vis-layer absolute inset-8 flex items-center justify-center transition-all duration-700 opacity-0 z-0 pointer-events-none"><div class="w-full h-[80%] bg-[#1e293b] rounded-2xl p-6 shadow-2xl border border-slate-700 relative"><button id="runKmeansBtn" class="absolute top-6 right-6 pointer-events-auto bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-lg hover:bg-indigo-400 transition">Étape Suivante</button><canvas id="clusteringChart"></canvas></div></div>
+            <div id="vis-7" class="vis-layer absolute inset-8 flex items-center justify-center transition-all duration-700 opacity-0 z-0 pointer-events-none"><div class="w-full h-[80%] bg-[#1e293b] rounded-2xl p-6 shadow-2xl border border-slate-700 relative"><h3 class="absolute top-6 left-6 text-white font-bold text-lg z-10">Complexité du Modèle</h3><div class="absolute top-6 right-6 flex gap-2 pointer-events-auto z-10"><button class="fit-btn bg-slate-700 text-white px-3 py-1 rounded hover:bg-slate-600" data-fit="under">Underfit</button><button class="fit-btn bg-green-600 text-white px-3 py-1 rounded hover:bg-green-500" data-fit="good">Optimal</button><button class="fit-btn bg-red-600 text-white px-3 py-1 rounded hover:bg-red-500" data-fit="over">Overfit</button></div><canvas id="overfitChart"></canvas></div></div>
+            <div id="vis-8" class="vis-layer absolute inset-8 flex flex-col items-center justify-center transition-all duration-700 opacity-0 z-0 pointer-events-none"><div class="relative w-full max-w-2xl h-[500px] flex items-center justify-between" id="nn-container-fw"><canvas id="nnCanvasFw" class="absolute inset-0 z-0"></canvas><div class="flex flex-col gap-12 z-10 pointer-events-auto"><button class="neuron input-neuron hover:scale-110" onclick="fireNetworkFw(0)">IN</button><button class="neuron input-neuron hover:scale-110" onclick="fireNetworkFw(1)">IN</button></div><div class="flex flex-col gap-6 z-10"><div class="neuron hidden-neuron-fw"></div><div class="neuron hidden-neuron-fw"></div><div class="neuron hidden-neuron-fw"></div></div><div class="flex flex-col gap-12 z-10"><div class="neuron output-neuron-fw text-2xl font-bold">?</div></div></div></div>
+            <div id="vis-9" class="vis-layer absolute inset-8 flex flex-col items-center justify-center transition-all duration-700 opacity-0 z-0 pointer-events-none"><div class="relative w-full max-w-2xl h-[500px] flex items-center justify-between" id="nn-container-bw"><canvas id="nnCanvasBw" class="absolute inset-0 z-0"></canvas><div class="flex flex-col gap-12 z-10"><div class="neuron input-neuron-bw border-slate-600">x1</div><div class="neuron input-neuron-bw border-slate-600">x2</div></div><div class="flex flex-col gap-6 z-10"><div class="neuron hidden-neuron-bw border-slate-600"></div><div class="neuron hidden-neuron-bw border-slate-600"></div><div class="neuron hidden-neuron-bw border-slate-600"></div></div><div class="flex flex-col gap-12 z-10 pointer-events-auto"><button class="neuron bg-red-500/20 border-red-500 text-red-300 font-bold hover:bg-red-500 hover:text-white transition" onclick="fireNetworkBw()">Err</button></div></div></div>
+            <div id="vis-10" class="vis-layer absolute inset-8 flex items-center justify-center transition-all duration-700 opacity-0 z-0 pointer-events-none"><div class="bg-[#1e293b] p-8 rounded-3xl border border-slate-700 w-full max-w-3xl flex items-center justify-between"><div class="w-24 h-24 bg-slate-800 rounded-xl border-2 border-slate-600 flex items-center justify-center text-4xl">🐱</div><div class="text-slate-600">→</div><div class="w-24 h-24 bg-slate-900 border-2 border-indigo-500 flex flex-col p-2 gap-1 justify-center relative"><div class="w-12 h-1 bg-white absolute top-6 left-2 rotate-45"></div><div class="w-1 h-12 bg-white absolute left-10 top-4"></div></div><div class="text-slate-600">→</div><div class="w-20 h-20 bg-pink-500/20 rounded-full border-4 border-pink-500 flex items-center justify-center"><span class="text-white font-black text-xs">CHAT</span></div></div></div>
+            <div id="vis-11" class="vis-layer absolute inset-8 flex items-center justify-center transition-all duration-700 opacity-0 z-0 pointer-events-none"><div class="w-full h-[80%] bg-[#1e293b] rounded-2xl p-6 shadow-2xl border border-slate-700 relative"><canvas id="nlpChart"></canvas></div></div>
 
-            <!-- Vis 2: Regression -->
-            <div id="vis-2" class="vis-layer absolute inset-8 flex flex-col transition-all duration-700 opacity-0 z-0 pointer-events-none">
-                <div class="flex-1 bg-[#1e293b] rounded-2xl p-4 shadow-inner relative w-full h-[60%]">
-                    <canvas id="regressionChart"></canvas>
-                </div>
-                <div class="mt-6 bg-[#1e293b] p-6 rounded-2xl border border-slate-700 w-full pointer-events-auto">
-                    <div class="mb-6">
-                        <div class="flex justify-between mb-2"><label class="text-indigo-400 font-bold">Poids (w)</label><span id="wValue" class="font-mono text-white">1.00</span></div>
-                        <input type="range" id="wSlider" min="-5" max="5" step="0.1" value="-2" class="w-full slider-indigo">
+            <!-- Vis 12: Medical Diagnosis (ML Playground) -->
+            <div id="vis-12" class="vis-layer absolute inset-8 flex flex-col transition-all duration-700 opacity-0 z-0 pointer-events-none">
+                <div class="w-full bg-[#1e293b] rounded-2xl p-8 shadow-2xl border border-slate-700 flex flex-col gap-8 pointer-events-auto h-full justify-center">
+                    
+                    <div class="text-center mb-4">
+                        <h3 class="text-xl font-bold text-teal-400 mb-2">IA Cardiologue</h3>
+                        <p class="text-sm text-slate-400">Modèle de Régression Logistique entraîné sur 10,000 patients</p>
                     </div>
-                    <div>
-                        <div class="flex justify-between mb-2"><label class="text-pink-400 font-bold">Biais (b)</label><span id="bValue" class="font-mono text-white">0.00</span></div>
-                        <input type="range" id="bSlider" min="-50" max="150" step="1" value="100" class="w-full slider-pink">
+
+                    <!-- Gauge Chart Container -->
+                    <div class="flex justify-center mb-6">
+                        <div class="relative w-64 h-32 overflow-hidden flex items-end justify-center">
+                            <!-- Semi circle background -->
+                            <div class="absolute top-0 w-64 h-64 border-[30px] border-slate-800 rounded-full"></div>
+                            <!-- Gauge Fill -->
+                            <div id="medGaugeFill" class="absolute top-0 w-64 h-64 border-[30px] border-green-500 rounded-full origin-bottom" style="clip-path: polygon(0 0, 100% 0, 100% 50%, 0 50%); transform: rotate(0deg); transition: transform 0.5s ease-out, border-color 0.5s ease-out;"></div>
+                            <div class="z-10 text-center mb-2 flex flex-col">
+                                <span id="medScore" class="text-4xl font-black text-white">12%</span>
+                                <span id="medLabel" class="text-sm font-bold text-green-400 uppercase tracking-wider">Risque Faible</span>
+                            </div>
+                        </div>
                     </div>
-                </div>
-            </div>
 
-            <!-- Vis 3: Loss Function (Parabola) -->
-            <div id="vis-3" class="vis-layer absolute inset-8 flex items-center justify-center transition-all duration-700 opacity-0 z-0 pointer-events-none">
-                <div class="w-full h-[80%] bg-[#1e293b] rounded-2xl p-6 shadow-2xl border border-slate-700 relative">
-                    <h3 class="absolute top-6 left-6 text-white font-bold text-lg z-10">La courbe d'Erreur J(w)</h3>
-                    <canvas id="lossChart"></canvas>
-                </div>
-            </div>
-
-            <!-- Vis 4: Gradient Descent Animation -->
-            <div id="vis-4" class="vis-layer absolute inset-8 flex flex-col transition-all duration-700 opacity-0 z-0 pointer-events-none">
-                <div class="flex-1 bg-[#1e293b] rounded-2xl p-4 shadow-inner relative w-full h-[60%]">
-                    <canvas id="gradientChart"></canvas>
-                </div>
-                <div class="mt-6 bg-[#1e293b] p-6 rounded-2xl border border-slate-700 w-full pointer-events-auto flex items-center gap-6">
-                    <div class="flex-1">
-                        <div class="flex justify-between mb-2"><label class="text-yellow-400 font-bold">Learning Rate ($\alpha$)</label><span id="lrValue" class="font-mono text-white">0.1</span></div>
-                        <input type="range" id="lrSlider" min="0.01" max="1.5" step="0.01" value="0.1" class="w-full slider-indigo">
-                    </div>
-                    <button id="runGradientBtn" class="bg-yellow-500 hover:bg-yellow-400 text-black font-bold py-3 px-6 rounded-xl shadow-lg transition">Lâcher la bille</button>
-                </div>
-            </div>
-
-            <!-- Vis 5: Classification -->
-            <div id="vis-5" class="vis-layer absolute inset-8 flex items-center justify-center transition-all duration-700 opacity-0 z-0 pointer-events-none">
-                <div class="w-full h-[80%] bg-[#1e293b] rounded-2xl p-6 shadow-2xl border border-slate-700 relative"><canvas id="classificationChart"></canvas></div>
-            </div>
-
-            <!-- Vis 6: Clustering -->
-            <div id="vis-6" class="vis-layer absolute inset-8 flex items-center justify-center transition-all duration-700 opacity-0 z-0 pointer-events-none">
-                <div class="w-full h-[80%] bg-[#1e293b] rounded-2xl p-6 shadow-2xl border border-slate-700 relative">
-                    <button id="runKmeansBtn" class="absolute top-6 right-6 pointer-events-auto bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-lg hover:bg-indigo-400 transition">Étape Suivante</button>
-                    <canvas id="clusteringChart"></canvas>
-                </div>
-            </div>
-
-            <!-- Vis 7: Overfitting -->
-            <div id="vis-7" class="vis-layer absolute inset-8 flex items-center justify-center transition-all duration-700 opacity-0 z-0 pointer-events-none">
-                <div class="w-full h-[80%] bg-[#1e293b] rounded-2xl p-6 shadow-2xl border border-slate-700 relative">
-                    <h3 class="absolute top-6 left-6 text-white font-bold text-lg z-10">Complexité du Modèle</h3>
-                    <div class="absolute top-6 right-6 flex gap-2 pointer-events-auto z-10">
-                        <button class="fit-btn bg-slate-700 text-white px-3 py-1 rounded hover:bg-slate-600" data-fit="under">Underfit</button>
-                        <button class="fit-btn bg-green-600 text-white px-3 py-1 rounded hover:bg-green-500" data-fit="good">Optimal</button>
-                        <button class="fit-btn bg-red-600 text-white px-3 py-1 rounded hover:bg-red-500" data-fit="over">Overfit</button>
-                    </div>
-                    <canvas id="overfitChart"></canvas>
-                </div>
-            </div>
-
-            <!-- Vis 8: Neural Network (Forward) -->
-            <div id="vis-8" class="vis-layer absolute inset-8 flex flex-col items-center justify-center transition-all duration-700 opacity-0 z-0 pointer-events-none">
-                <div class="relative w-full max-w-2xl h-[500px] flex items-center justify-between" id="nn-container-fw">
-                    <canvas id="nnCanvasFw" class="absolute inset-0 z-0"></canvas>
-                    <div class="flex flex-col gap-12 z-10 pointer-events-auto">
-                        <button class="neuron input-neuron hover:scale-110" onclick="fireNetworkFw(0)">IN</button>
-                        <button class="neuron input-neuron hover:scale-110" onclick="fireNetworkFw(1)">IN</button>
-                    </div>
-                    <div class="flex flex-col gap-6 z-10"><div class="neuron hidden-neuron-fw"></div><div class="neuron hidden-neuron-fw"></div><div class="neuron hidden-neuron-fw"></div></div>
-                    <div class="flex flex-col gap-12 z-10"><div class="neuron output-neuron-fw text-2xl font-bold">?</div></div>
-                </div>
-            </div>
-
-            <!-- Vis 9: Backpropagation -->
-            <div id="vis-9" class="vis-layer absolute inset-8 flex flex-col items-center justify-center transition-all duration-700 opacity-0 z-0 pointer-events-none">
-                <div class="relative w-full max-w-2xl h-[500px] flex items-center justify-between" id="nn-container-bw">
-                    <canvas id="nnCanvasBw" class="absolute inset-0 z-0"></canvas>
-                    <div class="flex flex-col gap-12 z-10">
-                        <div class="neuron input-neuron-bw border-slate-600">x1</div>
-                        <div class="neuron input-neuron-bw border-slate-600">x2</div>
-                    </div>
-                    <div class="flex flex-col gap-6 z-10"><div class="neuron hidden-neuron-bw border-slate-600"></div><div class="neuron hidden-neuron-bw border-slate-600"></div><div class="neuron hidden-neuron-bw border-slate-600"></div></div>
-                    <div class="flex flex-col gap-12 z-10 pointer-events-auto">
-                        <button class="neuron bg-red-500/20 border-red-500 text-red-300 font-bold hover:bg-red-500 hover:text-white transition" onclick="fireNetworkBw()">Err</button>
+                    <div class="space-y-6">
+                        <div>
+                            <div class="flex justify-between mb-2"><label class="text-slate-300 font-bold text-sm">Âge du Patient</label><span id="ageVal" class="font-mono text-teal-300">45 ans</span></div>
+                            <input type="range" id="ageSlider" min="20" max="90" step="1" value="45" class="w-full slider-indigo">
+                        </div>
+                        <div>
+                            <div class="flex justify-between mb-2"><label class="text-slate-300 font-bold text-sm">Cholestérol (mg/dL)</label><span id="cholVal" class="font-mono text-teal-300">180</span></div>
+                            <input type="range" id="cholSlider" min="100" max="350" step="1" value="180" class="w-full slider-indigo">
+                        </div>
+                        <div>
+                            <div class="flex justify-between mb-2"><label class="text-slate-300 font-bold text-sm">Pression Artérielle (mmHg)</label><span id="bpVal" class="font-mono text-teal-300">120</span></div>
+                            <input type="range" id="bpSlider" min="80" max="200" step="1" value="120" class="w-full slider-indigo">
+                        </div>
                     </div>
                 </div>
             </div>
 
-            <!-- Vis 10: Computer Vision -->
-            <div id="vis-10" class="vis-layer absolute inset-8 flex items-center justify-center transition-all duration-700 opacity-0 z-0 pointer-events-none">
-                <div class="bg-[#1e293b] p-8 rounded-3xl border border-slate-700 w-full max-w-3xl flex items-center justify-between">
-                    <div class="w-24 h-24 bg-slate-800 rounded-xl border-2 border-slate-600 flex items-center justify-center text-4xl">🐱</div>
-                    <div class="text-slate-600">→</div>
-                    <div class="w-24 h-24 bg-slate-900 border-2 border-indigo-500 flex flex-col p-2 gap-1 justify-center relative"><div class="w-12 h-1 bg-white absolute top-6 left-2 rotate-45"></div><div class="w-1 h-12 bg-white absolute left-10 top-4"></div></div>
-                    <div class="text-slate-600">→</div>
-                    <div class="w-20 h-20 bg-pink-500/20 rounded-full border-4 border-pink-500 flex items-center justify-center"><span class="text-white font-black text-xs">CHAT</span></div>
-                </div>
-            </div>
+            <!-- Vis 13: Sentiment Analysis (DL Playground) -->
+            <div id="vis-13" class="vis-layer absolute inset-8 flex flex-col items-center justify-center transition-all duration-700 opacity-0 z-0 pointer-events-none">
+                <div class="w-full bg-[#1e293b] rounded-2xl p-8 shadow-2xl border border-slate-700 flex flex-col gap-6 pointer-events-auto max-w-2xl">
+                    <div class="text-center">
+                        <h3 class="text-xl font-bold text-indigo-400 mb-2">IA Analyseur d'Émotions (NLP)</h3>
+                        <p class="text-sm text-slate-400">Simulation d'un réseau Transformer analysant la polarité lexicale</p>
+                    </div>
 
-            <!-- Vis 11: NLP -->
-            <div id="vis-11" class="vis-layer absolute inset-8 flex items-center justify-center transition-all duration-700 opacity-0 z-0 pointer-events-none">
-                <div class="w-full h-[80%] bg-[#1e293b] rounded-2xl p-6 shadow-2xl border border-slate-700 relative"><canvas id="nlpChart"></canvas></div>
+                    <textarea id="nlpInput" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-4 text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition resize-none custom-scrollbar" rows="4" placeholder="Écrivez votre critique de film ou de produit ici..."></textarea>
+                    
+                    <div class="flex items-center justify-between mt-2">
+                        <button id="analyzeBtn" class="bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2 px-6 rounded-lg shadow-lg shadow-indigo-500/20 transition flex items-center gap-2">
+                            <span>Analyser le texte</span>
+                            <span class="text-xs">✨</span>
+                        </button>
+                    </div>
+
+                    <div id="nlpResult" class="hidden mt-4 pt-6 border-t border-slate-700">
+                        <div class="mb-4">
+                            <span class="text-xs font-bold text-slate-500 uppercase tracking-wider">Texte Analysé (Attention Layers)</span>
+                            <div id="nlpHighlighted" class="mt-2 p-4 bg-slate-900 rounded-lg text-slate-300 text-lg leading-relaxed border border-slate-800"></div>
+                        </div>
+
+                        <div>
+                            <span class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">Score Global du Modèle</span>
+                            <div class="w-full bg-slate-800 rounded-full h-4 overflow-hidden flex border border-slate-700">
+                                <div id="nlpNegBar" class="bg-red-500 h-full transition-all duration-1000" style="width: 20%"></div>
+                                <div id="nlpNeuBar" class="bg-slate-500 h-full transition-all duration-1000" style="width: 20%"></div>
+                                <div id="nlpPosBar" class="bg-green-500 h-full transition-all duration-1000" style="width: 60%"></div>
+                            </div>
+                            <div class="flex justify-between mt-2 text-xs font-bold">
+                                <span class="text-red-400">Négatif <span id="nlpNegScore">20%</span></span>
+                                <span class="text-slate-400">Neutre <span id="nlpNeuScore">20%</span></span>
+                                <span class="text-green-400">Positif <span id="nlpPosScore">60%</span></span>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
             </div>
 
         </section>
