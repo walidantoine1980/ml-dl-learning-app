@@ -1,0 +1,11 @@
+{
+  "name": "ml-dl-learning-app",
+  "version": "1.0.0",
+  "description": "Plateforme pédagogique interactive sur le Machine et Deep Learning",
+  "scripts": {
+    "start": "serve . -p ${PORT:-3000}"
+  },
+  "dependencies": {
+    "serve": "^14.2.4"
+  }
+}

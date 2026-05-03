@@ -1,0 +1,153 @@
+/* Custom Scrollbar */
+.custom-scrollbar::-webkit-scrollbar {
+    width: 8px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+    background: #334155;
+    border-radius: 4px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: #475569;
+}
+
+/* Chapter Transition */
+.chapter {
+    display: none;
+    animation: fadeIn 0.5s ease-out forwards;
+}
+.chapter.active {
+    display: block;
+}
+
+/* Visual Container Transition */
+.vis-container {
+    display: none;
+    animation: fadeInScale 0.6s ease-out forwards;
+}
+.vis-container.active {
+    display: flex;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeInScale {
+    from { opacity: 0; transform: scale(0.95); }
+    to { opacity: 1; transform: scale(1); }
+}
+
+/* Tags */
+.tag {
+    display: inline-block;
+    padding: 0.25rem 1rem;
+    background: rgba(99, 102, 241, 0.2);
+    color: #818cf8;
+    border-radius: 50px;
+    font-size: 0.75rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 1.5rem;
+}
+
+/* Step Buttons in Header */
+.step-btn {
+    padding: 0.5rem 1.25rem;
+    border-radius: 50px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #94a3b8;
+    transition: all 0.3s;
+    border: 1px solid transparent;
+}
+.step-btn:hover {
+    color: #e2e8f0;
+    background: rgba(255, 255, 255, 0.05);
+}
+.step-btn.active {
+    color: white;
+    background: rgba(99, 102, 241, 0.2);
+    border-color: rgba(99, 102, 241, 0.5);
+    box-shadow: 0 0 15px rgba(99, 102, 241, 0.2);
+}
+
+/* Custom Range Sliders */
+input[type=range] {
+    -webkit-appearance: none;
+    height: 6px;
+    background: #334155;
+    border-radius: 5px;
+    outline: none;
+}
+input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    cursor: pointer;
+    transition: transform 0.1s;
+}
+input[type=range]::-webkit-slider-thumb:hover {
+    transform: scale(1.2);
+}
+.slider-indigo::-webkit-slider-thumb {
+    background: #818cf8;
+    box-shadow: 0 0 10px #818cf8;
+}
+.slider-pink::-webkit-slider-thumb {
+    background: #f472b6;
+    box-shadow: 0 0 10px #f472b6;
+}
+
+/* Neural Network Neurons */
+.neuron {
+    width: 60px;
+    height: 60px;
+    border-radius: 50%;
+    background: #1e293b;
+    border: 3px solid #334155;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.9rem;
+    color: #cbd5e1;
+    position: relative;
+    z-index: 10;
+    transition: all 0.3s ease;
+    box-shadow: 0 0 15px rgba(0,0,0,0.5);
+}
+
+.input-neuron {
+    cursor: pointer;
+    border-color: #64748b;
+}
+.input-neuron:hover {
+    border-color: #f8fafc;
+    transform: scale(1.1);
+}
+
+.neuron.active-purple {
+    background: rgba(168, 85, 247, 0.2);
+    border-color: #a855f7;
+    box-shadow: 0 0 20px rgba(168, 85, 247, 0.6);
+    color: #fff;
+}
+
+.neuron.active-pink {
+    background: rgba(236, 72, 153, 0.2);
+    border-color: #ec4899;
+    box-shadow: 0 0 20px rgba(236, 72, 153, 0.6);
+    color: #fff;
+}
+
+/* NN Canvas Line animation */
+canvas#nnCanvas {
+    pointer-events: none;
+}
