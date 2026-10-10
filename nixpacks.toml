@@ -11,12 +11,6 @@ PYTHONUNBUFFERED = "1"
 nixPkgs = ["...", "gcc"]
 aptPkgs = ["...", "libgomp1", "curl"]
 
-[phases.install]
-cmds = [
-    "python -m pip install --no-cache-dir --upgrade pip",
-    "python -m pip install --no-cache-dir -r requirements.txt"
-]
-
 [phases.build]
 cmds = [
     "python -m textblob.download_corpora || true"
