@@ -1,10 +1,25 @@
+# Nixpacks configuration for XGBoost Trader (Python 3.11 + Streamlit)
+providers = ["python"]
+
+[variables]
+NIXPACKS_PYTHON_VERSION = "3.11"
+NIXPACKS_PYTHON_PACKAGE_MANAGER = "pip"
+PIP_EXTRA_INDEX_URL = "https://download.pytorch.org/whl/cpu"
+PYTHONUNBUFFERED = "1"
+
 [phases.setup]
-aptPkgs = ["libgomp1", "curl"]
+nixPkgs = ["...", "gcc"]
+aptPkgs = ["...", "libgomp1", "curl"]
+
+[phases.install]
+cmds = [
+    "python -m pip install --no-cache-dir --upgrade pip",
+    "python -m pip install --no-cache-dir -r requirements.txt"
+]
 
 [phases.build]
 cmds = [
-    "pip install --no-cache-dir -r requirements.txt",
-    "python -m textblob.download_corpora"
+    "python -m textblob.download_corpora || true"
 ]
 
 [start]

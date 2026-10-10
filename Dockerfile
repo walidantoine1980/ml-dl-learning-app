@@ -19,8 +19,8 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Téléchargement des corpus NLP pour TextBlob
-RUN python -m textblob.download_corpora && \
+# Téléchargement des corpus NLP pour TextBlob (tolérant aux erreurs de connectivité)
+RUN (python -m textblob.download_corpora || true) && \
     if [ -d "/root/nltk_data" ]; then mv /root/nltk_data /usr/share/nltk_data; fi
 
 # Copie du code source complet
