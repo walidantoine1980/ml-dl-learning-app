@@ -490,6 +490,11 @@ class MLTrader:
             
         else:
             # --- WALK FORWARD ANALYSIS DYNAMIQUE ---
+            if wfa_end_date is None:
+                wfa_end_date = datetime.now().date()
+            if wfa_start_date is None:
+                wfa_start_date = (pd.Timestamp(wfa_end_date) - pd.DateOffset(years=5)).date()
+                
             st.info(f"🔄 Exécution Walk-Forward Analysis (WFA) : {wfa_start_date.strftime('%Y-%m-%d')} à {wfa_end_date.strftime('%Y-%m-%d')}")
             
             window_map = {"2Y": pd.DateOffset(years=2), "5Y": pd.DateOffset(years=5), "7Y": pd.DateOffset(years=7)}
@@ -3306,8 +3311,12 @@ def main():
         use_wfa = st.sidebar.checkbox("Activer Walk-Forward Analysis (WFA)")
         wfa_train_window = st.sidebar.selectbox("Fenêtre Entraînement", ["2Y", "5Y", "7Y"], index=1)
         wfa_step = st.sidebar.selectbox("Pas Avancement", ["1M", "2M", "6M", "1Y"], index=2)
-        wfa_start_date = st.sidebar.date_input("WFA Début", value=datetime(2019, 1, 1))
-        wfa_end_date = st.sidebar.date_input("WFA Fin", value=datetime(2026, 5, 9))
+        
+        # WFA Fin = Date d'aujourd'hui, WFA Début = 5 ans avant aujourd'hui
+        default_wfa_end = datetime.now().date()
+        default_wfa_start = (pd.Timestamp(default_wfa_end) - pd.DateOffset(years=5)).date()
+        wfa_start_date = st.sidebar.date_input("WFA Début", value=default_wfa_start)
+        wfa_end_date = st.sidebar.date_input("WFA Fin", value=default_wfa_end)
         
         if len(tickers) == 0:
             st.warning("👈 Veuillez sélectionner au moins une action dans le menu latéral.")
