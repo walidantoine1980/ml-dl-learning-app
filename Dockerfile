@@ -29,11 +29,8 @@ COPY . .
 # Création des dossiers de persistance
 RUN mkdir -p /app/models /app/data
 
-# Exposition du port Streamlit par défaut
-EXPOSE 8501
+# Exposition des ports (8501 standard et 3000 par défaut Dokploy)
+EXPOSE 8501 3000
 
-# Healthcheck dynamique
-HEALTHCHECK CMD sh -c "curl --fail http://localhost:${PORT:-8501}/_stcore/health"
-
-# Commande de lancement dynamique évaluant $PORT si fourni par l'hébergeur
-CMD ["sh", "-c", "streamlit run xgboost_trader.py --server.port=${PORT:-8501} --server.address=0.0.0.0"]
+# Commande de lancement universelle avec proxy bi-port
+CMD ["python", "dual_port_proxy.py"]

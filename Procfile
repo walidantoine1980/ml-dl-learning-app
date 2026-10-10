@@ -1,1 +1,1 @@
-web: streamlit run xgboost_trader.py --server.port $PORT --server.address 0.0.0.0
+web: python dual_port_proxy.py
