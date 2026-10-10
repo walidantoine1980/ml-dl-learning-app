@@ -403,7 +403,9 @@ class MLTrader:
         test_data['Event_Portfolio_Value'] = portfolio_values
         test_data['Strategy_Return'] = daily_returns
         test_data['Cum_Strategy_Return'] = test_data['Event_Portfolio_Value'] / initial_capital
-        test_data['Cum_Market_Return'] = (1.0 + test_data['Returns'].fillna(0.0)).cumprod()
+        # Rendement marché classique (Buy & Hold) rigoureusement normalisé à 1.0 sur la date initiale du test
+        first_close = float(test_data['Close'].iloc[0]) if len(test_data) > 0 and float(test_data['Close'].iloc[0]) > 0 else 1.0
+        test_data['Cum_Market_Return'] = test_data['Close'] / first_close
         
         return test_data
 
