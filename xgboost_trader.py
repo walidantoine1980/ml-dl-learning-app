@@ -490,18 +490,18 @@ class MLTrader:
             
         else:
             # --- WALK FORWARD ANALYSIS DYNAMIQUE ---
-            if wfa_end_date is None:
-                wfa_end_date = datetime.now().date()
-            if wfa_start_date is None:
-                wfa_start_date = (pd.Timestamp(wfa_end_date) - pd.DateOffset(years=5)).date()
-                
-            st.info(f"🔄 Exécution Walk-Forward Analysis (WFA) : {wfa_start_date.strftime('%Y-%m-%d')} à {wfa_end_date.strftime('%Y-%m-%d')}")
-            
             window_map = {"2Y": pd.DateOffset(years=2), "5Y": pd.DateOffset(years=5), "7Y": pd.DateOffset(years=7)}
             step_map = {"1M": pd.DateOffset(months=1), "2M": pd.DateOffset(months=2), "6M": pd.DateOffset(months=6), "1Y": pd.DateOffset(years=1)}
             
             train_window = window_map.get(wfa_train_window, pd.DateOffset(years=5))
             step_size = step_map.get(wfa_step, pd.DateOffset(months=6))
+            
+            if wfa_end_date is None:
+                wfa_end_date = datetime.now().date()
+            if wfa_start_date is None:
+                wfa_start_date = (pd.Timestamp(wfa_end_date) - train_window).date()
+                
+            st.info(f"🔄 Exécution Walk-Forward Analysis (WFA) : {wfa_start_date.strftime('%Y-%m-%d')} à {wfa_end_date.strftime('%Y-%m-%d')}")
             
             current_date = pd.to_datetime(wfa_start_date)
             if current_date.tzinfo is None and data.index.tzinfo is not None:
@@ -3312,11 +3312,15 @@ def main():
         wfa_train_window = st.sidebar.selectbox("Fenêtre Entraînement", ["2Y", "5Y", "7Y"], index=1)
         wfa_step = st.sidebar.selectbox("Pas Avancement", ["1M", "2M", "6M", "1Y"], index=2)
         
-        # WFA Fin = Date d'aujourd'hui, WFA Début = 5 ans avant aujourd'hui
+        # WFA Fin = Date d'aujourd'hui, WFA Début = WFA Fin - contenu de la fenêtre Entraînement (2Y, 5Y, 7Y)
+        window_offsets = {"2Y": pd.DateOffset(years=2), "5Y": pd.DateOffset(years=5), "7Y": pd.DateOffset(years=7)}
+        wfa_offset = window_offsets.get(wfa_train_window, pd.DateOffset(years=5))
+        
         default_wfa_end = datetime.now().date()
-        default_wfa_start = (pd.Timestamp(default_wfa_end) - pd.DateOffset(years=5)).date()
-        wfa_start_date = st.sidebar.date_input("WFA Début", value=default_wfa_start)
-        wfa_end_date = st.sidebar.date_input("WFA Fin", value=default_wfa_end)
+        default_wfa_start = (pd.Timestamp(default_wfa_end) - wfa_offset).date()
+        
+        wfa_start_date = st.sidebar.date_input("WFA Début", value=default_wfa_start, key=f"wfa_start_{wfa_train_window}")
+        wfa_end_date = st.sidebar.date_input("WFA Fin", value=default_wfa_end, key="wfa_end_today")
         
         if len(tickers) == 0:
             st.warning("👈 Veuillez sélectionner au moins une action dans le menu latéral.")
