@@ -301,6 +301,17 @@ class TestQuantCore(unittest.TestCase):
         self.assertIn("Titans Émergents & FinTech (Asie & LatAm)", PREDEFINED_PORTFOLIOS)
         self.assertIn("Santé Mondiale & Pharma Giants", PREDEFINED_PORTFOLIOS)
 
+    def test_13_academies_integrity(self):
+        """Vérifie l'intégrité et la disponibilité des 6 Grandes Académies Quantitatives."""
+        import academy_core
+        self.assertTrue(callable(getattr(academy_core, "render_indicators_academy", None)))
+        self.assertTrue(callable(getattr(academy_core, "render_xgboost_academy", None)))
+        self.assertTrue(callable(getattr(academy_core, "render_strategy_academy", None)))
+        self.assertTrue(callable(getattr(academy_core, "render_advanced_academy", None)))
+        self.assertTrue(callable(getattr(academy_core, "render_options_academy", None)))
+        self.assertTrue(callable(getattr(academy_core, "render_news_academy", None)))
+        self.assertTrue(callable(getattr(academy_core, "render_interactive_quiz", None)))
+
 
 if __name__ == "__main__":
     unittest.main()

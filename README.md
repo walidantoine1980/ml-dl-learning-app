@@ -4,36 +4,46 @@
 [![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12%20%7C%203.13-blue.svg)](https://www.python.org/)
 [![Machine Learning](https://img.shields.io/badge/ML-XGBoost%20%7C%20LightGBM%20%7C%20RandomForest-green.svg)](https://xgboost.readthedocs.io/)
 [![Architecture](https://img.shields.io/badge/Architecture-Clean%20%26%20Modular%20(quant__core)-orange.svg)](#architecture-du-projet)
-[![Tests](https://img.shields.io/badge/Tests-Passing%20(10%2F10)-brightgreen.svg)](#-suite-de-tests-automatis%C3%A9s)
+[![Tests](https://img.shields.io/badge/Tests-Passing%20(13%2F13)-brightgreen.svg)](#-suite-de-tests-automatis%C3%A9s)
 
-Un terminal quantitatif complet conçu selon les standards de l'industrie financière. Le système fusionne le **Machine Learning d'Ensemble (XGBoost, LightGBM, Random Forest)**, l'analyse technique stationnaire, le **Traitement du Langage Naturel (NLP)** et le **Pricing d'Options (Black-Scholes & Greeks)** pour générer des signaux de trading robustes et des stratégies de couverture.
+Un terminal quantitatif complet conçu selon les standards de l'industrie financière. Le système fusionne le **Machine Learning d'Ensemble (XGBoost, LightGBM, Random Forest)**, l'analyse technique stationnaire, le **Traitement du Langage Naturel (NLP)**, le **Pricing d'Options (Black-Scholes & Greeks)** et un **Pôle d'Académies Quantitatives interactives** pour former et guider les investisseurs.
 
-Le système intègre un simulateur de **Paper Trading local** 100% autonome avec gestion des liquidités, slippage, commissions et **vrais Stops dynamiques ATR**.
+Le système intègre un simulateur de **Paper Trading local** 100% autonome avec gestion des liquidités, slippage, commissions et **vrais Stops dynamiques ATR et Breakeven Stop automatique**.
 
 ---
 
-## 🏛️ Architecture du Projet (Clean Two-Tier Architecture)
+## 🏛️ Architecture du Projet (Clean Multi-Tier Architecture)
 
-Le dépôt est strictement découplé en deux couches pour garantir fiabilité et indépendance :
+Le dépôt est strictement découplé en couches modulaires pour garantir fiabilité, testabilité et indépendance :
 
 1.  **`quant_core.py` (Moteur Quantitatif Pur)** :
     *   Module Python indépendant de toute interface graphique (sans aucune dépendance à Streamlit).
     *   Pipeline de données propre : conservation rigoureuse de la dernière bougie $t$ pour les prédictions en direct (zéro décalage temporel).
     *   Ingénierie de caractéristiques stationnaires : ratios invariants d'échelle (`SMA_Ratio`, `NATR = ATR / Close`, `VWAP_Ratio`, `DXY_Return`).
-    *   Moteur de backtest événementiel réaliste avec slippage ($0.10\%$), commission ($0.05\%$), coupe-circuit VIX ($> 30$) et **Stops ATR dynamiques ($1.5 \times \text{ATR}$ Stop-Loss et $3.0 \times \text{ATR}$ Take-Profit)**.
+    *   Moteur de déclencheurs multi-régimes (`evaluate_multi_regime_triggers`) : Bouclier RSI, Coupe-circuit VIX ($> 30$), Volume Inflow et Bollinger Squeeze.
+    *   Moteur de backtest événementiel réaliste avec slippage ($0.10\%$), commission ($0.05\%$), Breakeven Stop dynamique ($+1.5 \times \text{ATR}$) et **Stops ATR dynamiques ($1.5 \times \text{ATR}$ Stop-Loss et $3.0 \times \text{ATR}$ Take-Profit)**.
     *   Allocation de portefeuille bayésienne de **Black-Litterman**.
     *   Pricing analytique d'options européennes de **Black-Scholes**, Greeks complets et solveur de Brent pour Delta cible.
     *   Persistance atomique du portefeuille (`portfolio.json` et `options_portfolio.json`).
 
-2.  **`xgboost_trader.py` (Terminal Web Interactif)** :
+2.  **`academy_core.py` (Pôle des 6 Grandes Académies Quantitatives)** :
+    *   Masterclass institutionnelle haute précision regroupant 6 piliers majeurs.
+    *   Démonstrations mathématiques et formules formelles LaTeX.
+    *   Exemples concrets chiffrés pas-à-pas (AAPL, NVDA, LVMH, S&P 500).
+    *   Pièges mortels et failles statistiques expliqués ("Ce que Wall Street ne vous dit pas").
+    *   Quiz interactifs d'auto-évaluation intégrés avec validation instantanée dans Streamlit.
+
+3.  **`xgboost_trader.py` (Terminal Web Interactif)** :
     *   Interface web riche développée avec Streamlit.
+    *   Cockpit des Déclencheurs Institutionnels (Multi-Triggers Dashboard).
     *   Visualisation Plotly interactive (Bandes de Bollinger, RSI, MACD, Volume).
     *   Explicabilité des décisions en temps réel par **SHAP Waterfall**.
     *   Tearsheets quantitatifs, simulation de Monte Carlo (Bootstrap) et académie pédagogique.
 
-3.  **`headless_bot.py` (Démon Autonome d'Arrière-Plan)** :
+4.  **`headless_bot.py` (Démon Autonome d'Arrière-Plan)** :
     *   Démon 24h/24 piloté par `schedule` ou exécutable en une passe (`--once`).
-    *   Surveillance proactive des positions ouvertes : exécution automatique des Stop-Loss et Take-Profit en séance.
+    *   Filtrage de sécurité automatique (VIX Circuit Breaker, RSI Shield).
+    *   Surveillance proactive des positions ouvertes : exécution automatique des Stop-Loss, Breakeven et Take-Profit en séance.
     *   Enrichissement nocturne post-clôture et alertes formatées via **Discord** et **Telegram**.
 
 ---
