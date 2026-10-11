@@ -34,9 +34,21 @@ from scipy.optimize import brentq
 # Modèles ML
 import xgboost as xgb
 from sklearn.ensemble import RandomForestClassifier, VotingClassifier
-import lightgbm as lgb
 from sklearn.metrics import accuracy_score
-import optuna
+
+try:
+    import lightgbm as lgb
+    HAS_LIGHTGBM = True
+except ImportError:
+    lgb = None
+    HAS_LIGHTGBM = False
+
+try:
+    import optuna
+    HAS_OPTUNA = True
+except ImportError:
+    optuna = None
+    HAS_OPTUNA = False
 
 
 # =============================================================================
@@ -172,8 +184,12 @@ def add_features(df):
     - Conserve INTÉGRALEMENT la dernière bougie t (Close d'aujourd'hui) sans la supprimer.
     - Ajoute le ratio NATR (Normalized ATR = ATR / Close) invariant d'échelle pour les arbres.
     - Conserve l'ATR brut pour le dimensionnement monétaire des Stops et Take-Profits.
+    - Aplatit automatiquement les colonnes MultiIndex issues de yfinance.
     """
     df = df.copy()
+    if hasattr(df.columns, "droplevel") and getattr(df.columns, "nlevels", 1) > 1:
+        df.columns = df.columns.droplevel(1)
+    df = df.loc[:, ~df.columns.duplicated()].copy()
     
     # 1. Rendements journaliers
     df['Returns'] = df['Close'].pct_change()
@@ -294,27 +310,38 @@ def get_macro_data(period="2y", interval="1d"):
         dxy_raw = yf.download("DX-Y.NYB", period=period, interval=interval, progress=False)
         
         def extract_close(raw_df):
-            if isinstance(raw_df.columns, pd.MultiIndex):
-                return raw_df['Close'].iloc[:, 0]
-            return raw_df['Close']
+            if raw_df is None or raw_df.empty:
+                return pd.Series(dtype=float)
+            if hasattr(raw_df.columns, "droplevel") and getattr(raw_df.columns, "nlevels", 1) > 1:
+                raw_df = raw_df.copy()
+                raw_df.columns = raw_df.columns.droplevel(1)
+            if 'Close' in raw_df.columns:
+                c = raw_df['Close']
+                if isinstance(c, pd.DataFrame):
+                    return c.iloc[:, 0]
+                return c
+            return pd.Series(dtype=float)
             
         spy = extract_close(spy_raw)
         vix = extract_close(vix_raw)
         tnx = extract_close(tnx_raw)
         dxy = extract_close(dxy_raw)
         
+        if spy.empty:
+            return None
+            
         macro = pd.DataFrame(index=spy.index)
         macro['SPY_Return'] = spy.pct_change()
         macro['VIX'] = vix
         macro['TNX'] = tnx
         # Transformation du dollar en variation journalière stationnaire
-        macro['DXY_Return'] = dxy.pct_change()
+        macro['DXY_Return'] = dxy.pct_change() if not dxy.empty else 0.0
         
         # Nettoyage timezone pour alignement multi-marchés (Europe/US/Asie)
         if macro.index.tz is not None:
             macro.index = macro.index.tz_localize(None)
             
-        return macro
+        return macro.ffill().bfill().fillna(0.0)
     except Exception as e:
         print(f"Erreur de téléchargement des données macro: {e}")
         return None
@@ -333,7 +360,7 @@ def join_macro_data(df, macro_df):
         
     joined = df.join(macro_df, how='left')
     macro_cols = list(macro_df.columns)
-    joined[macro_cols] = joined[macro_cols].ffill().bfill()
+    joined[macro_cols] = joined[macro_cols].ffill().bfill().fillna(0.0)
     return joined
 
 
@@ -355,12 +382,18 @@ class MLTrader:
         self.rf_model = RandomForestClassifier(
             n_estimators=100, max_depth=5, random_state=42
         )
-        self.lgb_model = lgb.LGBMClassifier(
-            n_estimators=100, learning_rate=0.05, max_depth=5, 
-            random_state=42, verbose=-1
-        )
+        estimators = [('xgb', self.xgb_model), ('rf', self.rf_model)]
+        if HAS_LIGHTGBM and lgb is not None:
+            self.lgb_model = lgb.LGBMClassifier(
+                n_estimators=100, learning_rate=0.05, max_depth=5, 
+                random_state=42, verbose=-1
+            )
+            estimators.append(('lgb', self.lgb_model))
+        else:
+            self.lgb_model = None
+
         self.model = VotingClassifier(
-            estimators=[('xgb', self.xgb_model), ('rf', self.rf_model), ('lgb', self.lgb_model)],
+            estimators=estimators,
             voting='soft'
         )
         self.is_trained = False
@@ -512,6 +545,7 @@ class MLTrader:
         closed_trades = []
         entry_price = 0.0
         entry_date = None
+        entry_index = None
         current_sl = 0.0
         current_tp = 0.0
         
@@ -559,7 +593,8 @@ class MLTrader:
                     
                     pnl = (exit_price - entry_price) * shares - (2 * commission)
                     pnl_pct = (exit_price - entry_price) / entry_price if entry_price > 0 else 0.0
-                    duration = (date - entry_date).days if hasattr(date, 'days') else i
+                    diff = date - entry_date if entry_date is not None else None
+                    duration = diff.days if hasattr(diff, 'days') else max(1, i - (entry_index if entry_index is not None else i - 1))
                     
                     closed_trades.append({
                         'entry_date': entry_date,
@@ -574,6 +609,8 @@ class MLTrader:
                     })
                     shares = 0.0
                     entry_price = 0.0
+                    entry_date = None
+                    entry_index = None
                     current_sl = 0.0
                     current_tp = 0.0
 
@@ -587,6 +624,7 @@ class MLTrader:
                 
                 entry_price = exec_price
                 entry_date = date
+                entry_index = i
                 # Calcul des niveaux de Stop-Loss et Take-Profit basés sur l'ATR
                 current_sl = entry_price - (atr_sl_mult * current_atr)
                 current_tp = entry_price + (atr_tp_mult * current_atr)
@@ -620,6 +658,7 @@ class MLTrader:
         - Conserve l'accès au dernier bar pour la prédiction en direct.
         """
         features = self.get_feature_list(data)
+        self.features = list(features)
         
         # Filtre d'entraînement propre : seules les lignes ayant une Target connue sont entraînées
         valid_train = data.dropna(subset=['Target'])
@@ -631,26 +670,36 @@ class MLTrader:
             X_train, X_test = X.iloc[:split], X.iloc[split:]
             y_train, y_test = y.iloc[:split], y.iloc[split:]
             
+            # Robustesse : si la cible ne contient qu'une seule classe (marché purement haussier ou baissier)
+            if len(np.unique(y_train)) < 2:
+                y_train = y_train.copy()
+                y_train.iloc[0] = 1 - int(y_train.iloc[0])
+            
             if optimize:
-                optuna.logging.set_verbosity(optuna.logging.WARNING)
-                from sklearn.model_selection import TimeSeriesSplit, cross_val_score
-                tscv = TimeSeriesSplit(n_splits=3)
+                if HAS_OPTUNA and optuna is not None:
+                    optuna.logging.set_verbosity(optuna.logging.WARNING)
+                    from sklearn.model_selection import TimeSeriesSplit, cross_val_score
+                    tscv = TimeSeriesSplit(n_splits=3)
 
-                def objective(trial):
-                    param = {
-                        'n_estimators': trial.suggest_int('n_estimators', 50, 250),
-                        'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.2, log=True),
-                        'max_depth': trial.suggest_int('max_depth', 3, 7)
-                    }
-                    m = xgb.XGBClassifier(**param, objective='binary:logistic', random_state=42)
-                    return cross_val_score(m, X_train, y_train, cv=tscv, scoring='accuracy').mean()
+                    def objective(trial):
+                        param = {
+                            'n_estimators': trial.suggest_int('n_estimators', 50, 250),
+                            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.2, log=True),
+                            'max_depth': trial.suggest_int('max_depth', 3, 7)
+                        }
+                        m = xgb.XGBClassifier(**param, objective='binary:logistic', random_state=42)
+                        return cross_val_score(m, X_train, y_train, cv=tscv, scoring='accuracy').mean()
 
-                study = optuna.create_study(direction='maximize')
-                study.optimize(objective, n_trials=10)
-                best_params = study.best_params
-                self.xgb_model = xgb.XGBClassifier(**best_params, objective='binary:logistic', random_state=42)
+                    study = optuna.create_study(direction='maximize')
+                    study.optimize(objective, n_trials=10)
+                    best_params = study.best_params
+                    self.xgb_model = xgb.XGBClassifier(**best_params, objective='binary:logistic', random_state=42)
+
+                estimators = [('xgb', self.xgb_model), ('rf', self.rf_model)]
+                if HAS_LIGHTGBM and self.lgb_model is not None:
+                    estimators.append(('lgb', self.lgb_model))
                 self.model = VotingClassifier(
-                    estimators=[('xgb', self.xgb_model), ('rf', self.rf_model), ('lgb', self.lgb_model)],
+                    estimators=estimators,
                     voting='soft'
                 )
                 self.model.fit(X_train, y_train)
@@ -719,16 +768,19 @@ class MLTrader:
                 X_tr, y_tr = X[mask_train], y[mask_train]
                 X_te, y_te_slice = X[mask_test], y[mask_test]
                 
-                if len(X_tr) < 50 or len(X_te) == 0:
+                if len(X_tr) < 50 or len(X_te) == 0 or len(np.unique(y_tr)) < 2:
                     current_date += step_size
                     continue
                     
                 self.xgb_model = xgb.XGBClassifier(n_estimators=100, learning_rate=0.05, max_depth=5, objective='binary:logistic', random_state=42)
                 self.rf_model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
-                self.lgb_model = lgb.LGBMClassifier(n_estimators=100, learning_rate=0.05, max_depth=5, random_state=42, verbose=-1)
+                estimators = [('xgb', self.xgb_model), ('rf', self.rf_model)]
+                if HAS_LIGHTGBM and lgb is not None:
+                    self.lgb_model = lgb.LGBMClassifier(n_estimators=100, learning_rate=0.05, max_depth=5, random_state=42, verbose=-1)
+                    estimators.append(('lgb', self.lgb_model))
                 
                 m = VotingClassifier(
-                    estimators=[('xgb', self.xgb_model), ('rf', self.rf_model), ('lgb', self.lgb_model)],
+                    estimators=estimators,
                     voting='soft'
                 )
                 m.fit(X_tr, y_tr)
@@ -770,11 +822,13 @@ class MLTrader:
         """
         Prédit la probabilité haussière pour la bougie suivante.
         Prend la bougie t courante et applique le coupe-circuit VIX si > 30.
+        Garantit l'alignement exact des colonnes attendues par le modèle.
         """
         if not self.is_trained:
             return None
-        features_clean = [f for f in features if f in last_row.columns]
-        X_input = last_row[features_clean]
+        features_expected = getattr(self, 'features', features)
+        # Réalignement défensif garantissant que toutes les variables sont présentes
+        X_input = last_row.reindex(columns=features_expected, fill_value=0.0)
         prob = float(self.model.predict_proba(X_input)[0][1])
         
         # Coupe-circuit Macro VIX > 30 en temps réel
@@ -835,6 +889,8 @@ def get_black_litterman_weights(returns_df, market_weights, views_dict, tau=0.05
             return {tickers[0]: 1.0}
             
         Sigma = returns_df.cov().values * 252
+        if np.isnan(Sigma).any():
+            return market_weights
         # Régularisation diagonale minimale pour garantir la stricte inversibilité
         Sigma += np.eye(N) * 1e-6
         

@@ -13,7 +13,6 @@ except ImportError:
 from sklearn.model_selection import train_test_split, RandomizedSearchCV
 from sklearn.metrics import classification_report, accuracy_score
 from sklearn.ensemble import RandomForestClassifier, VotingClassifier
-import lightgbm as lgb
 import time
 import pickle
 import os
@@ -26,10 +25,14 @@ if sys.platform.startswith('win'):
         pass
 import json
 import subprocess
-import optuna
 import scipy.stats as si
 from scipy.optimize import brentq
-import shap
+try:
+    import shap
+    HAS_SHAP = True
+except ImportError:
+    shap = None
+    HAS_SHAP = False
 from tickers_db import MAJOR_STOCKS, PREDEFINED_PORTFOLIOS
 import glob
 
@@ -656,10 +659,13 @@ def run_single_mode(ticker, period, interval, initial_capital, optimize_model, u
         if trader.is_trained:
             # --- NOUVEAU : SHAP WATERFALL ---
             st.markdown("### 🔬 Explicabilité de la décision du jour (SHAP)")
-            try:
-                # Dans un VotingClassifier, les modèles entraînés sont dans estimators_
-                fitted_xgb = trader.model.estimators_[0]
-                explainer = shap.TreeExplainer(fitted_xgb)
+            if not HAS_SHAP or shap is None:
+                st.info("Le package `shap` n'est pas installé dans cet environnement. Exécutez `pip install shap` pour afficher les explications SHAP.")
+            else:
+                try:
+                    # Dans un VotingClassifier, les modèles entraînés sont dans estimators_
+                    fitted_xgb = trader.model.estimators_[0]
+                    explainer = shap.TreeExplainer(fitted_xgb)
                 shap_values = explainer.shap_values(last_row[features])
                 
                 if isinstance(shap_values, list):
@@ -769,7 +775,7 @@ def run_portfolio_mode(tickers, period, interval, initial_capital, optimize_mode
                 
             # --- 3. Optimisation Black-Litterman ---
             st.write("🧮 Optimisation de la Matrice de Covariance (Black-Litterman)...")
-            returns_df = pd.DataFrame(returns_dict).dropna()
+            returns_df = pd.DataFrame(returns_dict).ffill().bfill().fillna(0.0)
             
             # Application du modèle
             bl_weights = get_black_litterman_weights(returns_df, market_weights, views_dict)
@@ -1105,12 +1111,14 @@ def format_large_number(num):
     if num is None or pd.isna(num): return "N/A"
     try:
         num = float(num)
-    except:
+    except Exception:
         return str(num)
-    if num >= 1e12: return f"{num/1e12:.2f} T"
-    if num >= 1e9: return f"{num/1e9:.2f} B"
-    if num >= 1e6: return f"{num/1e6:.2f} M"
-    return f"{num:,.2f}"
+    sign = "-" if num < 0 else ""
+    abs_num = abs(num)
+    if abs_num >= 1e12: return f"{sign}{abs_num/1e12:.2f} T"
+    if abs_num >= 1e9: return f"{sign}{abs_num/1e9:.2f} B"
+    if abs_num >= 1e6: return f"{sign}{abs_num/1e6:.2f} M"
+    return f"{sign}{abs_num:,.2f}"
 
 def page_fundamentals(tickers):
     st.title("🏢 Analyse Fondamentale & Screener")
