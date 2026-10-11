@@ -17,6 +17,13 @@ import lightgbm as lgb
 import time
 import pickle
 import os
+import sys
+if sys.platform.startswith('win'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
 import json
 import subprocess
 import optuna
@@ -24,9 +31,18 @@ import scipy.stats as si
 from scipy.optimize import brentq
 import shap
 from tickers_db import MAJOR_STOCKS, PREDEFINED_PORTFOLIOS
-
 import glob
 
+# Import du moteur quantitatif centralisé
+from quant_core import (
+    add_features, get_macro_data as qc_get_macro_data, join_macro_data,
+    MLTrader, convert_google_to_yahoo_ticker, get_company_name_from_yahoo,
+    get_option_multiplier_and_legislation, get_black_litterman_weights,
+    black_scholes, find_strike_for_delta, run_options_backtest_simulation,
+    get_portfolio_path, load_portfolio, save_portfolio,
+    get_options_portfolio_path, load_options_portfolio, save_options_portfolio,
+    execute_equity_trade
+)
 # Le chargement des portefeuilles personnalisés est maintenant géré dynamiquement par tickers_db.py
 
 @st.cache_resource(show_spinner="Chargement du modèle Deep Learning NLP (FinBERT)...")
@@ -43,26 +59,8 @@ def load_finbert():
 
 @st.cache_data(ttl=3600)
 def get_macro_data(period, interval):
-    """Télécharge l'historique des indicateurs macroéconomiques"""
-    try:
-        spy_raw = yf.download("SPY", period=period, interval=interval, progress=False)
-        vix_raw = yf.download("^VIX", period=period, interval=interval, progress=False)
-        tnx_raw = yf.download("^TNX", period=period, interval=interval, progress=False)
-        dxy_raw = yf.download("DX-Y.NYB", period=period, interval=interval, progress=False)
-        
-        spy = spy_raw['Close'].iloc[:, 0] if isinstance(spy_raw.columns, pd.MultiIndex) else spy_raw['Close']
-        vix = vix_raw['Close'].iloc[:, 0] if isinstance(vix_raw.columns, pd.MultiIndex) else vix_raw['Close']
-        tnx = tnx_raw['Close'].iloc[:, 0] if isinstance(tnx_raw.columns, pd.MultiIndex) else tnx_raw['Close']
-        dxy = dxy_raw['Close'].iloc[:, 0] if isinstance(dxy_raw.columns, pd.MultiIndex) else dxy_raw['Close']
-        
-        macro = pd.DataFrame(index=spy.index)
-        macro['SPY_Return'] = spy.pct_change()
-        macro['VIX'] = vix
-        macro['TNX'] = tnx
-        macro['DXY'] = dxy
-        return macro.ffill()
-    except Exception:
-        return None
+    """Télécharge l'historique des indicateurs macroéconomiques avec cache Streamlit"""
+    return qc_get_macro_data(period=period, interval=interval)
 
 @st.cache_data(ttl=3600)
 def get_news_sentiment(ticker):
@@ -163,514 +161,9 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- FONCTIONS DE CALCUL D'INDICATEURS ---
-def add_features(df):
-    """Calcule les features techniques pour le modèle XGBoost avec ratios stationnaires."""
-    df = df.copy()
-    
-    # Rendements
-    df['Returns'] = df['Close'].pct_change()
-    
-    # Moyennes Mobiles (brutes pour affichage graphique dans tab1)
-    df['SMA_20'] = df['Close'].rolling(window=20).mean()
-    df['SMA_50'] = df['Close'].rolling(window=50).mean()
-    df['SMA_200'] = df['Close'].rolling(window=200).mean()
-    df['EMA_9'] = df['Close'].ewm(span=9, adjust=False).mean()
-    
-    # Ratios Stationnaires pour le Machine Learning (invariants d'échelle)
-    df['SMA_20_Ratio'] = (df['Close'] / (df['SMA_20'] + 1e-9)) - 1.0
-    df['SMA_50_Ratio'] = (df['Close'] / (df['SMA_50'] + 1e-9)) - 1.0
-    df['SMA_200_Ratio'] = (df['Close'] / (df['SMA_200'] + 1e-9)) - 1.0
-    df['EMA_9_Ratio'] = (df['Close'] / (df['EMA_9'] + 1e-9)) - 1.0
-    
-    # Volatilité
-    df['Vol_20'] = df['Returns'].rolling(window=20).std()
-    
-    # RSI
-    delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / (loss + 1e-9)
-    df['RSI'] = 100 - (100 / (1 + rs))
-    
-    # MACD (normalisé par le cours)
-    exp1 = df['Close'].ewm(span=12, adjust=False).mean()
-    exp2 = df['Close'].ewm(span=26, adjust=False).mean()
-    df['MACD'] = (exp1 - exp2) / (df['Close'] + 1e-9)
-    df['Signal_Line'] = df['MACD'].ewm(span=9, adjust=False).mean()
-    
-    # Bandes de Bollinger
-    df['BB_Mid'] = df['Close'].rolling(window=20).mean()
-    df['BB_Std'] = df['Close'].rolling(window=20).std()
-    df['BB_Upper'] = df['BB_Mid'] + (df['BB_Std'] * 2)
-    df['BB_Lower'] = df['BB_Mid'] - (df['BB_Std'] * 2)
-    
-    bb_range = df['BB_Upper'] - df['BB_Lower']
-    df['BB_Percent'] = np.where(bb_range > 0, (df['Close'] - df['BB_Lower']) / (bb_range + 1e-9), 0.5)
-    df['BB_Width'] = bb_range / (df['BB_Mid'] + 1e-9)
-    
-    # ATR & ADX
-    high_low = df['High'] - df['Low']
-    high_close = np.abs(df['High'] - df['Close'].shift())
-    low_close = np.abs(df['Low'] - df['Close'].shift())
-    ranges = pd.concat([high_low, high_close, low_close], axis=1)
-    true_range = np.max(ranges, axis=1)
-    df['ATR'] = true_range.rolling(14).mean()
-
-    # ADX (Average Directional Index)
-    plus_dm = df['High'].diff()
-    minus_dm = df['Low'].shift() - df['Low']
-    plus_dm = np.where(plus_dm < 0, 0, plus_dm)
-    minus_dm = np.where(minus_dm < 0, 0, minus_dm)
-    plus_dm_actual = np.where(plus_dm > minus_dm, plus_dm, 0)
-    minus_dm_actual = np.where(minus_dm > plus_dm, minus_dm, 0)
-    
-    tr14 = true_range.rolling(14).sum() + 1e-9
-    plus_di14 = 100 * (pd.Series(plus_dm_actual, index=df.index).rolling(14).sum() / tr14)
-    minus_di14 = 100 * (pd.Series(minus_dm_actual, index=df.index).rolling(14).sum() / tr14)
-    dx = 100 * np.abs(plus_di14 - minus_di14) / (plus_di14 + minus_di14 + 1e-9)
-    df['ADX'] = dx.rolling(14).mean()
-
-    # Volume Ratio & Stochastique
-    vol_mean_20 = df['Volume'].rolling(window=20).mean()
-    df['Volume_Ratio'] = df['Volume'] / (vol_mean_20 + 1e-9)
-    
-    # OBV
-    obv = (np.sign(df['Close'].diff()) * df['Volume']).fillna(0).cumsum()
-    df['OBV'] = obv
-    
-    # Oscillateur Stochastique (%K)
-    lowest_low = df['Low'].rolling(window=14).min()
-    highest_high = df['High'].rolling(window=14).max()
-    stoch_range = highest_high - lowest_low
-    df['Stoch_K'] = 100 * ((df['Close'] - lowest_low) / (stoch_range + 1e-9))
-    
-    # ROC (Rate of Change) sur 10 jours
-    df['ROC'] = df['Close'].pct_change(periods=10) * 100
-    
-    # Approximation VWAP sur 14 jours
-    typical_price = (df['High'] + df['Low'] + df['Close']) / 3
-    vol_sum_14 = df['Volume'].rolling(window=14).sum() + 1e-9
-    df['VWAP'] = (typical_price * df['Volume']).rolling(window=14).sum() / vol_sum_14
-    df['VWAP_Ratio'] = (df['Close'] / (df['VWAP'] + 1e-9)) - 1.0
-
-    # Lags stationnaires (Rendements décalés au lieu des prix bruts)
-    for i in range(1, 4):
-        df[f'Lag_{i}'] = df['Close'].shift(i)
-        df[f'Lag_{i}_Return'] = df['Returns'].shift(i)
-        
-    # Cible propre : exclut proprement la dernière bougie sans faux zéro
-    future_diff = df['Close'].shift(-1) - df['Close']
-    df['Target'] = np.where(future_diff > 0, 1.0, np.where(future_diff < 0, 0.0, np.nan))
-    
-    return df.dropna()
-
-# --- MOTEUR MACHINE LEARNING ---
-class MLTrader:
-    def __init__(self):
-        self.xgb_model = xgb.XGBClassifier(n_estimators=100, learning_rate=0.05, max_depth=5, objective='binary:logistic', random_state=42)
-        self.rf_model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
-        self.lgb_model = lgb.LGBMClassifier(n_estimators=100, learning_rate=0.05, max_depth=5, random_state=42, verbose=-1)
-        
-        self.model = VotingClassifier(
-            estimators=[('xgb', self.xgb_model), ('rf', self.rf_model), ('lgb', self.lgb_model)],
-            voting='soft'
-        )
-        self.is_trained = False
-        self.accuracy = 0.0
-        self.feature_importances = None
-        self.backtest_results = None
-        self.advanced_metrics = {}
-
-    def calculate_advanced_metrics(self, test_data):
-        metrics = {}
-        strat_returns = test_data['Strategy_Return'].fillna(0)
-        
-        winning_days = len(strat_returns[strat_returns > 0])
-        total_trades_days = len(strat_returns[strat_returns != 0])
-        win_rate = winning_days / total_trades_days if total_trades_days > 0 else 0
-        metrics['Win Rate'] = win_rate
-        
-        # --- NEW: Kelly Criterion ---
-        avg_win = strat_returns[strat_returns > 0].mean() if winning_days > 0 else 0
-        avg_loss = abs(strat_returns[strat_returns < 0].mean()) if (total_trades_days - winning_days) > 0 else 1
-        win_loss_ratio = avg_win / avg_loss if avg_loss > 0 else 0
-        kelly_pct = win_rate - ((1 - win_rate) / win_loss_ratio) if win_loss_ratio > 0 else 0
-        metrics['Kelly %'] = kelly_pct if kelly_pct > 0 else 0
-        
-        cum_returns = (1 + strat_returns).cumprod()
-        rolling_max = cum_returns.cummax()
-        drawdown = (cum_returns - rolling_max) / rolling_max
-        metrics['Max Drawdown'] = drawdown.min() if not drawdown.empty else 0
-        
-        mean_ret = strat_returns.mean()
-        std_ret = strat_returns.std()
-        metrics['Sharpe Ratio'] = (mean_ret / std_ret * np.sqrt(252)) if std_ret > 0 else 0
-        
-        downside_returns = strat_returns[strat_returns < 0]
-        downside_std = downside_returns.std()
-        metrics['Sortino Ratio'] = (mean_ret / downside_std * np.sqrt(252)) if downside_std > 0 else 0
-        
-        # --- NOUVEAU: VaR & CVaR ---
-        if not strat_returns.empty:
-            var_95 = np.percentile(strat_returns.dropna(), 5)
-            metrics['VaR (95%)'] = var_95
-            metrics['CVaR'] = strat_returns[strat_returns <= var_95].mean()
-        else:
-            metrics['VaR (95%)'] = 0
-            metrics['CVaR'] = 0
-            
-        # --- NOUVEAU: Probabilité de Ruine (Monte Carlo) ---
-        metrics['Probabilité de Ruine'] = self.run_monte_carlo(strat_returns.dropna())
-        
-        self.advanced_metrics = metrics
-
-    def run_monte_carlo(self, returns, num_simulations=1000, ruin_threshold=0.8):
-        """Simule 1000 chemins de rendements aléatoires pour évaluer le risque de perdre 20% du capital"""
-        if len(returns) == 0:
-            return 0.0
-        n_days = len(returns)
-        # Tirage au sort avec remise
-        simulations = np.random.choice(returns, size=(num_simulations, n_days), replace=True)
-        cum_simulations = np.cumprod(1 + simulations, axis=1)
-        ruin_cases = np.any(cum_simulations < ruin_threshold, axis=1)
-        return float(np.mean(ruin_cases))
-
-    def run_event_driven_backtest(self, test_data, initial_capital=100000.0):
-        """
-        Moteur de Backtest Événementiel (Event-Driven)
-        Simule l'exécution de marché réaliste avec Latence, Slippage, Commissions et Hystérésis.
-        """
-        cash = float(initial_capital)
-        shares = 0.0
-        
-        commission_rate = 0.0005 # 0.05% frais
-        slippage_rate = 0.0010   # 0.10% slippage
-        
-        portfolio_values = []
-        daily_returns = []
-        last_val = float(initial_capital)
-        
-        has_open = 'Open' in test_data.columns
-        
-        # 1. Hystérésis : maintien de position entre 0.45 et 0.55 pour éliminer les faux signaux
-        signals = []
-        curr_sig = 0
-        probs = test_data['Prob'].values if 'Prob' in test_data.columns else [0.5]*len(test_data)
-        for p in probs:
-            if p > 0.55:
-                curr_sig = 1
-            elif p < 0.45:
-                curr_sig = 0
-            signals.append(curr_sig)
-        test_data['Signal'] = signals
-        
-        # Coupe-circuit Macro VIX
-        if 'VIX' in test_data.columns:
-            test_data.loc[test_data['VIX'] > 30, 'Signal'] = 0
-            
-        for i in range(len(test_data)):
-            row = test_data.iloc[i]
-            
-            # Latence : exécution à l'Open du signal calculé à la Close de la veille
-            signal = 0 if i == 0 else test_data['Signal'].iloc[i-1]
-            current_open = float(row['Open']) if has_open else float(row['Close'])
-            current_close = float(row['Close'])
-            
-            # Exécution ACHAT
-            if signal == 1 and shares == 0:
-                exec_price = current_open * (1.0 + slippage_rate)
-                investable = cash / (1.0 + commission_rate)
-                shares = investable / exec_price
-                commission = investable * commission_rate
-                cash -= (shares * exec_price + commission)
-                
-            # Exécution VENTE
-            elif signal == 0 and shares > 0:
-                exec_price = current_open * (1.0 - slippage_rate)
-                proceeds = shares * exec_price
-                commission = proceeds * commission_rate
-                cash += proceeds - commission
-                shares = 0.0
-                
-            current_val = cash + (shares * current_close)
-            portfolio_values.append(current_val)
-            
-            ret = (current_val - last_val) / last_val if last_val > 0 else 0.0
-            daily_returns.append(ret)
-            last_val = current_val
-            
-        test_data['Event_Portfolio_Value'] = portfolio_values
-        test_data['Strategy_Return'] = daily_returns
-        test_data['Cum_Strategy_Return'] = test_data['Event_Portfolio_Value'] / initial_capital
-        # Rendement marché classique (Buy & Hold) rigoureusement normalisé à 1.0 sur la date initiale du test
-        first_close = float(test_data['Close'].iloc[0]) if len(test_data) > 0 and float(test_data['Close'].iloc[0]) > 0 else 1.0
-        test_data['Cum_Market_Return'] = test_data['Close'] / first_close
-        
-        return test_data
-
-    def train(self, data, optimize=False, use_wfa=False, wfa_train_window="5Y", wfa_step="6M", wfa_start_date=None, wfa_end_date=None):
-        base_features = ['Returns', 'SMA_20_Ratio', 'SMA_50_Ratio', 'SMA_200_Ratio', 'EMA_9_Ratio', 
-                     'Vol_20', 'RSI', 'MACD', 'Signal_Line', 'BB_Percent', 'BB_Width', 'ATR', 'ADX', 
-                     'Volume_Ratio', 'Stoch_K', 'ROC', 'VWAP_Ratio', 
-                     'Lag_1_Return', 'Lag_2_Return', 'Lag_3_Return']
-        macro_features = ['SPY_Return', 'VIX', 'TNX', 'DXY']
-        
-        features = [f for f in base_features + macro_features if f in data.columns]
-        X = data[features]
-        y = data['Target']
-        
-        if not use_wfa:
-            split = int(len(X) * 0.8)
-            X_train, X_test = X.iloc[:split], X.iloc[split:]
-            y_train, y_test = y.iloc[:split], y.iloc[split:]
-            
-            # 4. Walk-Forward Validation (basique)
-            from sklearn.model_selection import TimeSeriesSplit
-            tscv = TimeSeriesSplit(n_splits=3)
-            
-            if optimize:
-                # 1. Hyper-Optimisation avec Optuna (Bayésienne)
-                optuna.logging.set_verbosity(optuna.logging.WARNING)
-
-                def objective(trial):
-                    param = {
-                        'n_estimators': trial.suggest_int('n_estimators', 50, 300),
-                        'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.2, log=True),
-                        'max_depth': trial.suggest_int('max_depth', 3, 9)
-                    }
-                    model = xgb.XGBClassifier(**param, objective='binary:logistic', random_state=42)
-                    
-                    # Walk-Forward Validation pour le score
-                    from sklearn.model_selection import cross_val_score
-                    score = cross_val_score(model, X_train, y_train, cv=tscv, scoring='accuracy').mean()
-                    return score
-
-                # Création de l'étude Optuna
-                study = optuna.create_study(direction='maximize')
-                study.optimize(objective, n_trials=10) # 10 essais pour un bon compromis vitesse/précision
-                
-                best_params = study.best_params
-                self.xgb_model = xgb.XGBClassifier(**best_params, objective='binary:logistic', random_state=42)
-                self.model = VotingClassifier(
-                    estimators=[('xgb', self.xgb_model), ('rf', self.rf_model), ('lgb', self.lgb_model)],
-                    voting='soft'
-                )
-                self.model.fit(X_train, y_train)
-                st.toast(f"Optimisation Optuna (XGBoost) terminée : {best_params}", icon="🧬")
-            else:
-                self.model.fit(X_train, y_train)
-            
-            # Récupération de l'importance des variables (Moyenne des 3 modèles)
-            importances = np.mean([est.feature_importances_ for est in self.model.estimators_], axis=0)
-            self.feature_importances = pd.DataFrame(
-                {'Feature': features, 'Importance': importances}
-            ).sort_values(by='Importance', ascending=True)
-            
-            # Backtest
-            test_data = data.iloc[split:].copy()
-            test_data['Prob'] = self.model.predict_proba(X_test)[:, 1]
-            
-            # Signal de base
-            test_data['Signal'] = np.where(test_data['Prob'] > 0.55, 1, 0)
-            
-            # 3. Filtre Macro-économique (Régime de Krach)
-            if 'VIX' in test_data.columns:
-                # Si le VIX dépasse 30, on force le passage en cash (0)
-                test_data.loc[test_data['VIX'] > 30, 'Signal'] = 0
-                
-            # 4. Moteur de Backtest Événementiel (Event-Driven)
-            test_data = self.run_event_driven_backtest(test_data)
-            
-            self.backtest_results = test_data
-            self.accuracy = accuracy_score(y_test, self.model.predict(X_test))
-            self.calculate_advanced_metrics(test_data)
-            self.is_trained = True
-            return features
-            
-        else:
-            # --- WALK FORWARD ANALYSIS DYNAMIQUE ---
-            window_map = {"2Y": pd.DateOffset(years=2), "5Y": pd.DateOffset(years=5), "7Y": pd.DateOffset(years=7)}
-            step_map = {"1M": pd.DateOffset(months=1), "2M": pd.DateOffset(months=2), "6M": pd.DateOffset(months=6), "1Y": pd.DateOffset(years=1)}
-            
-            train_window = window_map.get(wfa_train_window, pd.DateOffset(years=5))
-            step_size = step_map.get(wfa_step, pd.DateOffset(months=6))
-            
-            if wfa_end_date is None:
-                wfa_end_date = datetime.now().date()
-            if wfa_start_date is None:
-                wfa_start_date = (pd.Timestamp(wfa_end_date) - train_window).date()
-                
-            st.info(f"🔄 Exécution Walk-Forward Analysis (WFA) : {wfa_start_date.strftime('%Y-%m-%d')} à {wfa_end_date.strftime('%Y-%m-%d')}")
-            
-            current_date = pd.to_datetime(wfa_start_date)
-            if current_date.tzinfo is None and data.index.tzinfo is not None:
-                current_date = current_date.tz_localize(data.index.tzinfo)
-            end_date = pd.to_datetime(wfa_end_date)
-            if end_date.tzinfo is None and data.index.tzinfo is not None:
-                end_date = end_date.tz_localize(data.index.tzinfo)
-                
-            all_test_data = []
-            all_importances = []
-            y_test_all = []
-            y_pred_all = []
-            
-            # Progress bar for WFA
-            progress_bar = st.progress(0)
-            total_days = (end_date - current_date).days
-            start_days = total_days
-            
-            while current_date < end_date:
-                train_start = current_date - train_window
-                test_end = current_date + step_size
-                
-                mask_train = (data.index >= train_start) & (data.index < current_date)
-                mask_test = (data.index >= current_date) & (data.index < test_end)
-                
-                X_train, y_train = X[mask_train], y[mask_train]
-                X_test, y_test_slice = X[mask_test], y[mask_test]
-                
-                if len(X_train) < 50 or len(X_test) == 0:
-                    st.write(f"⏩ *Passage* : Données insuffisantes pour la période du {current_date.strftime('%Y-%m-%d')}")
-                    current_date += step_size
-                    continue
-                    
-                st.write(f"⏳ **Entraînement WFA** : Historique {train_start.strftime('%Y-%m-%d')} à {current_date.strftime('%Y-%m-%d')} | **Test (Prédiction)** : {current_date.strftime('%Y-%m-%d')} à {test_end.strftime('%Y-%m-%d')}...")
-                
-                self.xgb_model = xgb.XGBClassifier(n_estimators=100, learning_rate=0.05, max_depth=5, objective='binary:logistic', random_state=42)
-                self.rf_model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
-                self.lgb_model = lgb.LGBMClassifier(n_estimators=100, learning_rate=0.05, max_depth=5, random_state=42, verbose=-1)
-                
-                self.model = VotingClassifier(
-                    estimators=[('xgb', self.xgb_model), ('rf', self.rf_model), ('lgb', self.lgb_model)],
-                    voting='soft'
-                )
-                self.model.fit(X_train, y_train)
-                
-                prob = self.model.predict_proba(X_test)[:, 1]
-                pred = self.model.predict(X_test)
-                
-                step_acc = accuracy_score(y_test_slice, pred)
-                st.write(f"✅ **Pas terminé** -> Précision sur ce sous-test : **{step_acc:.2%}**")
-                
-                test_slice = data[mask_test].copy()
-                test_slice['Prob'] = prob
-                test_slice['Signal'] = np.where(test_slice['Prob'] > 0.55, 1, 0)
-                if 'VIX' in test_slice.columns:
-                    test_slice.loc[test_slice['VIX'] > 30, 'Signal'] = 0
-                    
-                all_test_data.append(test_slice)
-                y_test_all.extend(y_test_slice.values)
-                y_pred_all.extend(pred)
-                
-                imp = np.mean([est.feature_importances_ for est in self.model.estimators_], axis=0)
-                all_importances.append(imp)
-                
-                current_date += step_size
-                
-                if start_days > 0:
-                    prog = min(1.0, 1.0 - ((end_date - current_date).days / start_days))
-                    progress_bar.progress(prog)
-            
-            progress_bar.empty()
-                
-            if len(all_test_data) == 0:
-                st.error("WFA : Pas assez de données pour générer un backtest. Élargissez la période téléchargée ou réduisez la fenêtre d'entraînement.")
-                return features
-                
-            final_test_data = pd.concat(all_test_data)
-            
-            avg_importances = np.mean(all_importances, axis=0)
-            self.feature_importances = pd.DataFrame(
-                {'Feature': features, 'Importance': avg_importances}
-            ).sort_values(by='Importance', ascending=True)
-            
-            final_test_data = self.run_event_driven_backtest(final_test_data)
-            self.backtest_results = final_test_data
-            self.accuracy = accuracy_score(y_test_all, y_pred_all)
-            self.calculate_advanced_metrics(final_test_data)
-            self.is_trained = True
-            
-            
-                
-            return features
-
-    def predict(self, last_row, features):
-        if not self.is_trained:
-            return None
-            
-        model_to_use = self.model
-        features_clean = [f for f in features if f in last_row.columns]
-        X_input = last_row[features_clean].values.reshape(1, -1)
-        prob = model_to_use.predict_proba(X_input)[0][1]
-        
-        # Coupe-circuit Macro en direct (VIX > 30)
-        if 'VIX' in last_row.columns and float(last_row['VIX'].values[0]) > 30:
-            return 0.0
-        return float(prob)
-        
-    def save(self, filepath):
-        state = {
-            'model': self.model,
-            'accuracy': self.accuracy,
-            'feature_importances': self.feature_importances,
-            'backtest_results': self.backtest_results,
-            'is_trained': self.is_trained,
-            'advanced_metrics': getattr(self, 'advanced_metrics', {})
-        }
-        with open(filepath, 'wb') as f:
-            pickle.dump(state, f)
-            
-    @staticmethod
-    def load(filepath):
-        with open(filepath, 'rb') as f:
-            state = pickle.load(f)
-        trader = MLTrader()
-        trader.model = state['model']
-        trader.accuracy = state['accuracy']
-        trader.feature_importances = state['feature_importances']
-        trader.backtest_results = state['backtest_results']
-        trader.is_trained = state['is_trained']
-        trader.advanced_metrics = state.get('advanced_metrics', {})
-        return trader
-
-def convert_google_to_yahoo_ticker(ticker):
-    """Convertit un ticker Google Finance en format Yahoo Finance"""
-    if ":" not in ticker:
-        return ticker.strip().upper()
-        
-    exchange, symbol = ticker.split(":", 1)
-    exchange = exchange.strip().upper()
-    symbol = symbol.strip().upper()
-    
-    exchange_mapping = {
-        'EPA': '.PA', 'LON': '.L', 'TSE': '.TO', 'FRA': '.F', 'BIT': '.MI',
-        'BME': '.MC', 'AMS': '.AS', 'EBR': '.BR', 'LIS': '.LS', 'VTX': '.SW',
-        'TYO': '.T', 'HKG': '.HK', 'ASX': '.AX', 'NASDAQ': '', 'NYSE': '', 'AMEX': ''
-    }
-    
-    suffix = exchange_mapping.get(exchange, "")
-    return f"{symbol}{suffix}"
-
-def get_company_name_from_yahoo(yahoo_ticker):
-    from tickers_db import MAJOR_STOCKS
-    for name, google_ticker in MAJOR_STOCKS.items():
-        if google_ticker != "CUSTOM":
-            if convert_google_to_yahoo_ticker(google_ticker) == yahoo_ticker:
-                clean_name = name.split(" (")[0]
-                return f"{clean_name} ({yahoo_ticker})"
-    return yahoo_ticker
-
-def get_option_multiplier_and_legislation(ticker):
-    """
-    Retourne le multiplicateur et la législation applicable selon le ticker.
-    US: 100 actions/contrat
-    EU: 10 actions/contrat (règle simplifiée basée sur le suffixe)
-    """
-    eu_suffixes = ['.PA', '.L', '.TO', '.F', '.MI', '.MC', '.AS', '.BR', '.LS', '.SW', '.DE']
-    if any(ticker.endswith(suffix) for suffix in eu_suffixes):
-        return 10, "Législation Européenne (10 actions/contrat - Exercice à l'échéance uniquement)"
-    return 100, "Législation Américaine (100 actions/contrat - Exercice et revente libres)"
+# --- MOTEUR QUANTITATIF ---
+# Les fonctions de calcul d'indicateurs (add_features), l'Ensemble Machine Learning (MLTrader),
+# et les convertisseurs de tickers sont désormais importés directement depuis quant_core.py.
 
 # --- MODES D'AFFICHAGE ---
 
@@ -697,7 +190,7 @@ def run_single_mode(ticker, period, interval, initial_capital, optimize_model, u
 
     df = add_features(df_raw)
     if macro_df is not None:
-        df = df.join(macro_df, how='left').ffill().dropna()
+        df = join_macro_data(df, macro_df)
     
     col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
     
@@ -728,12 +221,7 @@ def run_single_mode(ticker, period, interval, initial_capital, optimize_model, u
     if trader.is_trained:
         last_row = df.iloc[-1:]
         # Default features if loaded from disk without re-training session
-        base_features = ['Returns', 'SMA_20_Ratio', 'SMA_50_Ratio', 'SMA_200_Ratio', 'EMA_9_Ratio', 
-                     'Vol_20', 'RSI', 'MACD', 'Signal_Line', 'BB_Percent', 'BB_Width', 'ATR', 'ADX', 
-                     'Volume_Ratio', 'Stoch_K', 'ROC', 'VWAP_Ratio', 
-                     'Lag_1_Return', 'Lag_2_Return', 'Lag_3_Return']
-        macro_features = ['SPY_Return', 'VIX', 'TNX', 'DXY']
-        features = [f for f in base_features + macro_features if f in df.columns]
+        features = trader.get_feature_list(df)
         prob = trader.predict(last_row, features)
         st.progress(float(prob))
         
@@ -1200,57 +688,7 @@ def run_single_mode(ticker, period, interval, initial_capital, optimize_model, u
         else:
             st.warning("Entraînez le modèle pour débloquer l'analyse du cerveau de l'IA.")
 
-def get_black_litterman_weights(returns_df, market_weights, views_dict, tau=0.05, risk_aversion=2.5):
-    """
-    Calcule les poids optimaux via le modèle de Black-Litterman.
-    returns_df: DataFrame des rendements historiques de chaque action
-    market_weights: Poids d'équilibre (ex: Risk Parity ou Market Cap)
-    views_dict: Dictionnaire {ticker: expected_excess_return} issu de XGBoost
-    """
-    try:
-        tickers = list(returns_df.columns)
-        N = len(tickers)
-        
-        # 1. Matrice de Covariance et Rendements d'équilibre (Prior)
-        Sigma = returns_df.cov().values * 252
-        W_mkt = np.array([market_weights[t] for t in tickers])
-        Pi = risk_aversion * Sigma.dot(W_mkt)
-        
-        # 2. Matrices des Vues (P, Q, Omega)
-        P = np.eye(N)
-        Q = np.array([views_dict.get(t, 0.0) for t in tickers])
-        
-        # Si aucune vue n'est forte, on retourne les poids d'équilibre
-        if np.all(Q == 0.0):
-            return market_weights
-            
-        # Incertitude des vues (Méthode de He-Litterman proportionnelle à la variance)
-        Omega = np.diag(np.diag(tau * P.dot(Sigma).dot(P.T)))
-        
-        # 3. Posterior (Rendements ajustés)
-        tau_Sigma_inv = np.linalg.inv(tau * Sigma)
-        Omega_inv = np.linalg.inv(Omega)
-        
-        left_term = np.linalg.inv(tau_Sigma_inv + P.T.dot(Omega_inv).dot(P))
-        right_term = tau_Sigma_inv.dot(Pi) + P.T.dot(Omega_inv).dot(Q)
-        
-        posterior_expected_returns = left_term.dot(right_term)
-        
-        # 4. Nouveaux poids optimisés
-        W_bl = np.linalg.inv(risk_aversion * Sigma).dot(posterior_expected_returns)
-        
-        # Pas de vente à découvert pour notre portefeuille long-only, on ramène à 0
-        W_bl = np.clip(W_bl, 0.0, None)
-        
-        # Normalisation pour que la somme = 1 (100% d'allocation)
-        if np.sum(W_bl) > 0:
-            W_bl = W_bl / np.sum(W_bl)
-        else:
-            W_bl = W_mkt # Fallback si problème d'inversion
-            
-        return {tickers[i]: W_bl[i] for i in range(N)}
-    except Exception as e:
-        return market_weights # Fallback en cas d'erreur de matrice singulière
+# get_black_litterman_weights est importé de quant_core.py
 
 def run_portfolio_mode(tickers, period, interval, initial_capital, optimize_model, use_wfa=False, wfa_train_window="5Y", wfa_step="6M", wfa_start_date=None, wfa_end_date=None):
     st.subheader("🌐 Mode Portefeuille Institutionnel (Black-Litterman)")
@@ -1296,7 +734,7 @@ def run_portfolio_mode(tickers, period, interval, initial_capital, optimize_mode
                 macro_df = get_macro_data(period, interval)
                 df = add_features(df_raw)
                 if macro_df is not None:
-                    df = df.join(macro_df, how='left').ffill().dropna()
+                    df = join_macro_data(df, macro_df)
                 trader = MLTrader()
                 features = trader.train(df, optimize=optimize_model, use_wfa=use_wfa, wfa_train_window=wfa_train_window, wfa_step=wfa_step, wfa_start_date=wfa_start_date, wfa_end_date=wfa_end_date)
                 st.session_state[f"port_trader_{t}"] = trader
@@ -1887,49 +1325,7 @@ def page_strategy_academy():
     > Selon une distribution Normale (Gaussienne), le Krach de 1987 (-22% en un jour) est un événement qui ne devrait se produire qu'une fois tous les 14 milliards d'années ! Or, les marchés font des "Fat Tails" : les catastrophes arrivent très souvent. La CVaR permet précisément de mesurer le coût de ces cygnes noirs, là où la VaR simple devient aveugle.
     """)
 
-def get_portfolio_path():
-    # Si le dossier /app/data existe (cas d'un volume monté sur Dokploy), on l'utilise.
-    # Sinon, on sauvegarde localement dans le dossier courant.
-    data_dir = "/app/data"
-    if os.path.exists(data_dir):
-        return os.path.join(data_dir, "portfolio.json")
-    return "portfolio.json"
-
-def load_portfolio():
-    path = get_portfolio_path()
-    if os.path.exists(path):
-        try:
-            with open(path, "r") as f:
-                return json.load(f)
-        except json.JSONDecodeError:
-            pass # Fichier vide ou corrompu, on recrée par défaut
-    return {"cash": 100000.0, "positions": {}, "history": []}
-
-def save_portfolio(pf):
-    path = get_portfolio_path()
-    with open(path, "w") as f:
-        json.dump(pf, f, indent=4)
-
-def get_options_portfolio_path():
-    data_dir = "/app/data"
-    if os.path.exists(data_dir):
-        return os.path.join(data_dir, "options_portfolio.json")
-    return "options_portfolio.json"
-
-def load_options_portfolio():
-    path = get_options_portfolio_path()
-    if os.path.exists(path):
-        try:
-            with open(path, "r") as f:
-                return json.load(f)
-        except json.JSONDecodeError:
-            pass
-    return {"cash": 100000.0, "positions": {}, "history": []}
-
-def save_options_portfolio(pf):
-    path = get_options_portfolio_path()
-    with open(path, "w") as f:
-        json.dump(pf, f, indent=4)
+# Fonctions de persistance de portefeuille importées de quant_core.py
 
 def page_paper_trading():
     st.title("🕹️ Simulateur Paper Trading")
@@ -2271,44 +1667,7 @@ def page_advanced_academy():
     3.  Cela nous permet de calculer la **Probabilité de Ruine**. "Dans combien de ces univers alternatifs l'algorithme a-t-il fait faillite ?"
     """)
 
-def black_scholes(S, K, T, r, sigma, option_type="call"):
-    # Bornes de sécurité mathématique strictes
-    T = max(float(T), 1e-5)
-    sigma = max(float(sigma), 1e-4)
-    S = max(float(S), 1e-4)
-    K = max(float(K), 1e-4)
-    r = float(r)
-    
-    d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
-    d2 = d1 - sigma * np.sqrt(T)
-    if option_type == "call":
-        price = S * si.norm.cdf(d1, 0.0, 1.0) - K * np.exp(-r * T) * si.norm.cdf(d2, 0.0, 1.0)
-        delta = si.norm.cdf(d1, 0.0, 1.0)
-    else:
-        price = K * np.exp(-r * T) * si.norm.cdf(-d2, 0.0, 1.0) - S * si.norm.cdf(-d1, 0.0, 1.0)
-        delta = -si.norm.cdf(-d1, 0.0, 1.0)
-        
-    gamma = si.norm.pdf(d1, 0.0, 1.0) / (S * sigma * np.sqrt(T))
-    vega = S * si.norm.pdf(d1, 0.0, 1.0) * np.sqrt(T)
-    if option_type == "call":
-        theta = (- (S * sigma * si.norm.pdf(d1, 0.0, 1.0)) / (2 * np.sqrt(T)) - r * K * np.exp(-r * T) * si.norm.cdf(d2, 0.0, 1.0)) / 365.0
-    else:
-        theta = (- (S * sigma * si.norm.pdf(d1, 0.0, 1.0)) / (2 * np.sqrt(T)) + r * K * np.exp(-r * T) * si.norm.cdf(-d2, 0.0, 1.0)) / 365.0
-    return max(0.0, float(price)), float(delta), float(gamma), float(theta), float(vega)
-
-def find_strike_for_delta(S, T, r, sigma, option_type, target_delta):
-    """
-    Trouve le Strike K tel que le Delta théorique de BS correspond au target_delta.
-    target_delta doit être positif pour un Call (ex: 0.15) et négatif pour un Put (ex: -0.15).
-    """
-    def obj(K):
-        _, d, _, _, _ = black_scholes(S, K, T, r, sigma, option_type)
-        return d - target_delta
-    try:
-        K_opt = brentq(obj, S * 0.1, S * 3.0)
-        return K_opt
-    except ValueError:
-        return S # Fallback au prix actuel si aucune solution trouvée
+# black_scholes et find_strike_for_delta sont importés de quant_core.py
 
 def page_options_pricing(tickers):
     st.title("🧮 Pricing d'Options (Black-Scholes)")
@@ -2334,7 +1693,7 @@ def page_options_pricing(tickers):
             macro_df = get_macro_data("1y", "1d")
             df = add_features(df_raw)
             if macro_df is not None:
-                df = df.join(macro_df, how='left').ffill().dropna()
+                df = join_macro_data(df, macro_df)
             
             last_row = df.iloc[-1:]
             base_features = ['Returns', 'SMA_20_Ratio', 'SMA_50_Ratio', 'SMA_200_Ratio', 'EMA_9_Ratio', 
