@@ -313,9 +313,11 @@ def run_single_mode(ticker, period, interval, initial_capital, optimize_model, u
             risk_per_share = abs(current_price - stop_loss)
             
             # --- CRITÈRE DE KELLY (Half-Kelly) ---
-            kelly_pct = getattr(trader, 'advanced_metrics', {}).get('Kelly %', 0)
+            adv_m = getattr(trader, 'advanced_metrics', {})
+            kelly_pct = adv_m.get('Kelly %', adv_m.get('Trade Kelly %', 0.0))
+            half_kelly_pct = adv_m.get('Half Kelly %', min(0.05, max(0.0, kelly_pct / 2.0)))
             if kelly_pct > 0:
-                risk_pct = min(kelly_pct / 2, 0.05) # Max 5% du compte
+                risk_pct = min(half_kelly_pct, 0.05) # Max 5% du compte
                 st.info(f"Half-Kelly Actif : {risk_pct*100:.2f}% (Plein Kelly: {kelly_pct*100:.2f}%)")
             else:
                 risk_pct = 0.01 # 1% par défaut si Kelly=0
@@ -1416,12 +1418,7 @@ def page_options_pricing(tickers):
                 df = join_macro_data(df, macro_df)
             
             last_row = df.iloc[-1:]
-            base_features = ['Returns', 'SMA_20_Ratio', 'SMA_50_Ratio', 'SMA_200_Ratio', 'EMA_9_Ratio', 
-                     'Vol_20', 'RSI', 'MACD', 'Signal_Line', 'BB_Percent', 'BB_Width', 'ATR', 'ADX', 
-                     'Volume_Ratio', 'Stoch_K', 'ROC', 'VWAP_Ratio', 
-                     'Lag_1_Return', 'Lag_2_Return', 'Lag_3_Return']
-            macro_features = ['SPY_Return', 'VIX', 'TNX', 'DXY']
-            features = [f for f in base_features + macro_features if f in df.columns]
+            features = trader.get_feature_list(df)
             prob = trader.predict(last_row, features)
             
             if prob > 0.6:
@@ -1750,12 +1747,7 @@ def page_rag_gemini(tickers, gemini_api_key):
                             trader_quant = MLTrader()
                             features_quant = trader_quant.train(df_quant, optimize=False, use_wfa=False)
                             
-                        base_feat_q = ['Returns', 'SMA_20_Ratio', 'SMA_50_Ratio', 'SMA_200_Ratio', 'EMA_9_Ratio', 
-                                       'Vol_20', 'RSI', 'MACD', 'Signal_Line', 'BB_Percent', 'BB_Width', 'ATR', 'ADX', 
-                                       'Volume_Ratio', 'Stoch_K', 'ROC', 'VWAP_Ratio', 
-                                       'Lag_1_Return', 'Lag_2_Return', 'Lag_3_Return']
-                        macro_feat_q = ['SPY_Return', 'VIX', 'TNX', 'DXY']
-                        features_to_use = [f for f in base_feat_q + macro_feat_q if f in df_quant.columns]
+                        features_to_use = trader_quant.get_feature_list(df_quant)
                         prob_quant = trader_quant.predict(df_quant.iloc[-1:], features_to_use)
                         if prob_quant is not None:
                             direction = "HAUSSIÈRE" if prob_quant > 0.55 else ("BAISSIÈRE" if prob_quant < 0.45 else "NEUTRE")

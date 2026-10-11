@@ -341,7 +341,7 @@ def get_macro_data(period="2y", interval="1d"):
         if macro.index.tz is not None:
             macro.index = macro.index.tz_localize(None)
             
-        return macro.ffill().bfill().fillna(0.0)
+        return macro.ffill().fillna(0.0)
     except Exception as e:
         print(f"Erreur de téléchargement des données macro: {e}")
         return None
@@ -360,7 +360,7 @@ def join_macro_data(df, macro_df):
         
     joined = df.join(macro_df, how='left')
     macro_cols = list(macro_df.columns)
-    joined[macro_cols] = joined[macro_cols].ffill().bfill().fillna(0.0)
+    joined[macro_cols] = joined[macro_cols].ffill().fillna(0.0)
     return joined
 
 
@@ -643,6 +643,7 @@ class MLTrader:
             metrics['Payoff Ratio'] = payoff_ratio
             metrics['Trade Kelly %'] = max(0.0, trade_kelly)
             metrics['Half Kelly %'] = min(0.05, max(0.0, trade_kelly / 2.0))
+            metrics['Kelly %'] = metrics['Trade Kelly %']
         else:
             # Fallback journalier
             winning_days = len(strat_returns[strat_returns > 0])
@@ -652,6 +653,7 @@ class MLTrader:
             metrics['Trade Win Rate'] = trade_win_rate
             metrics['Trade Kelly %'] = 0.0
             metrics['Half Kelly %'] = 0.0
+            metrics['Kelly %'] = 0.0
 
         metrics['Win Rate'] = trade_win_rate
         
