@@ -2700,11 +2700,12 @@ def main():
     # Filtrer les valeurs par défaut qui sont dans MAJOR_STOCKS pour le multiselect
     valid_defaults = [s for s in default_selection if s in MAJOR_STOCKS.keys()]
     
-    # Remplacement par Multiselect
+    # Remplacement par Multiselect réactif
     stock_choices = st.sidebar.multiselect(
         "Rechercher une ou plusieurs actions", 
         options=list(MAJOR_STOCKS.keys()), 
-        default=valid_defaults
+        default=valid_defaults,
+        key=f"stocks_ms_{portfolio_choice}"
     )
     
     tickers = []
