@@ -648,7 +648,7 @@ class MLTrader:
             ).sort_values(by='Importance', ascending=True)
             
             # Backtest sur le jeu de test
-            test_data = data.iloc[split:].copy()
+            test_data = valid_train.iloc[split:].copy()
             clean_test = test_data[features]
             test_data['Prob'] = self.model.predict_proba(clean_test)[:, 1]
             test_data = self.run_event_driven_backtest(test_data)
@@ -666,10 +666,17 @@ class MLTrader:
             train_window = window_map.get(wfa_train_window, pd.DateOffset(years=5))
             step_size = step_map.get(wfa_step, pd.DateOffset(months=6))
             
+            last_ts = pd.Timestamp(valid_train.index[-1])
+            first_ts = pd.Timestamp(valid_train.index[0])
+            
             if wfa_end_date is None:
-                wfa_end_date = datetime.now().date()
+                wfa_end_date = last_ts.date()
             if wfa_start_date is None:
-                wfa_start_date = (pd.Timestamp(wfa_end_date) - train_window).date()
+                computed_start = (pd.Timestamp(wfa_end_date) - train_window).date()
+                min_start = (first_ts + train_window).date()
+                wfa_start_date = max(min_start, computed_start)
+                if wfa_start_date >= wfa_end_date:
+                    wfa_start_date = (first_ts + pd.DateOffset(months=6)).date()
                 
             current_date = pd.to_datetime(wfa_start_date)
             if current_date.tzinfo is None and data.index.tzinfo is not None:
@@ -713,7 +720,7 @@ class MLTrader:
                 prob = m.predict_proba(X_te)[:, 1]
                 pred = m.predict(X_te)
                 
-                test_slice = data[mask_test].copy()
+                test_slice = valid_train[mask_test].copy()
                 test_slice['Prob'] = prob
                 all_test_data.append(test_slice)
                 

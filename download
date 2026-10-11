@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Environnements virtuels
+env/
+venv/
+.venv/
+ENV/
+build/
+dist/
+*.egg-info/
+
+# Persistance des données et modèles
+models/
+data/
+*.pkl
+*.joblib
+portfolio.json
+options_portfolio.json
+bot_config.json
+.env
+
+# Système & IDE
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.log
+*.bak
+*.tmp
