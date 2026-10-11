@@ -25,7 +25,8 @@ from quant_core import (
     add_features, MLTrader, black_scholes, find_strike_for_delta,
     get_black_litterman_weights, execute_equity_trade, execute_option_trade,
     convert_google_to_yahoo_ticker, get_option_multiplier_and_legislation,
-    load_portfolio, save_portfolio, load_options_portfolio, save_options_portfolio
+    load_portfolio, save_portfolio, load_options_portfolio, save_options_portfolio,
+    evaluate_multi_regime_triggers
 )
 
 
@@ -241,6 +242,64 @@ class TestQuantCore(unittest.TestCase):
         finally:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
+
+    def test_11_multi_regime_triggers(self):
+        """Vérifie l'évaluation rigoureuse des déclencheurs multi-régimes (RSI Shield, VIX Breaker, Squeeze)."""
+        row_bull = pd.Series({
+            'Close': 150.0,
+            'SMA_200': 130.0,
+            'SMA_50': 140.0,
+            'RSI': 80.0, # Surchat extrême
+            'Volume_Ratio': 2.0, # Volume Surge
+            'BB_Width': 0.04, # Bollinger Squeeze
+            'BB_Upper': 155.0,
+            'BB_Lower': 145.0,
+            'VIX': 15.0
+        })
+        triggers = evaluate_multi_regime_triggers(row_bull, current_price=150.0, current_atr=3.0, trader_prob=0.70)
+        
+        self.assertEqual(triggers['trend_regime']['status'], 'BULLISH')
+        self.assertEqual(triggers['rsi_shield']['status'], 'OVERBOUGHT_SHIELD')
+        self.assertEqual(triggers['volume_surge']['status'], 'INSTITUTIONAL_INFLOW')
+        self.assertEqual(triggers['bollinger_squeeze']['status'], 'SQUEEZE_ACTIVE')
+        self.assertEqual(triggers['macro_vix']['status'], 'CALM_MARKET')
+        self.assertAlmostEqual(triggers['risk_levels']['breakeven_trigger'], 154.5)
+        
+        # Test Coupe-Circuit VIX > 30
+        row_crisis = pd.Series({
+            'Close': 100.0,
+            'SMA_200': 110.0,
+            'SMA_50': 105.0,
+            'RSI': 25.0,
+            'VIX': 35.0
+        })
+        trig_crisis = evaluate_multi_regime_triggers(row_crisis, current_price=100.0, current_atr=2.0)
+        self.assertEqual(trig_crisis['macro_vix']['status'], 'CIRCUIT_BREAKER_ON')
+        self.assertEqual(trig_crisis['trend_regime']['status'], 'BEARISH')
+        self.assertEqual(trig_crisis['rsi_shield']['status'], 'OVERSOLD_OPPORTUNITY')
+
+    def test_12_global_stock_universe(self):
+        """Vérifie la présence et la conversion des actions mondiales majeures (Asie, Europe, US, LatAm)."""
+        from tickers_db import MAJOR_STOCKS, PREDEFINED_PORTFOLIOS
+        
+        # Vérification des nouveaux champions internationaux
+        self.assertIn("Taiwan Semiconductor (TSMC) (TW)", MAJOR_STOCKS)
+        self.assertIn("ASML Holding (NL)", MAJOR_STOCKS)
+        self.assertIn("Novo Nordisk (DK)", MAJOR_STOCKS)
+        self.assertIn("Alibaba Group (CN)", MAJOR_STOCKS)
+        self.assertIn("Tencent Holdings (CN)", MAJOR_STOCKS)
+        self.assertIn("MercadoLibre (LATAM)", MAJOR_STOCKS)
+        
+        # Vérification des conversions Yahoo Finance
+        self.assertEqual(convert_google_to_yahoo_ticker(MAJOR_STOCKS["Taiwan Semiconductor (TSMC) (TW)"]), "TSM")
+        self.assertEqual(convert_google_to_yahoo_ticker(MAJOR_STOCKS["ASML Holding (NL)"]), "ASML.AS")
+        self.assertEqual(convert_google_to_yahoo_ticker(MAJOR_STOCKS["Tencent Holdings (CN)"]), "0700.HK")
+        self.assertEqual(convert_google_to_yahoo_ticker(MAJOR_STOCKS["Novo Nordisk (DK)"]), "NVO")
+        
+        # Vérification des portefeuilles thématiques mondiaux
+        self.assertIn("Leaders Mondiaux Semi-conducteurs & IA", PREDEFINED_PORTFOLIOS)
+        self.assertIn("Titans Émergents & FinTech (Asie & LatAm)", PREDEFINED_PORTFOLIOS)
+        self.assertIn("Santé Mondiale & Pharma Giants", PREDEFINED_PORTFOLIOS)
 
 
 if __name__ == "__main__":

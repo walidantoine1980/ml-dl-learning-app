@@ -35,7 +35,8 @@ if sys.platform.startswith('win'):
 from quant_core import (
     MLTrader, add_features, get_macro_data, join_macro_data,
     load_portfolio, save_portfolio, execute_equity_trade,
-    convert_google_to_yahoo_ticker, get_company_name_from_yahoo
+    convert_google_to_yahoo_ticker, get_company_name_from_yahoo,
+    evaluate_multi_regime_triggers
 )
 from tickers_db import MAJOR_STOCKS
 
@@ -229,20 +230,41 @@ def run_trading_job():
             signal_type = "⚪ NEUTRE"
             
             pf = load_portfolio()
+            current_vix = float(macro_df['VIX'].iloc[-1]) if (macro_df is not None and 'VIX' in macro_df.columns and not macro_df.empty) else None
+            
+            # Évaluation des déclencheurs multi-régimes (RSI Shield, Macro Trend, Volume Surge, Bollinger)
+            triggers = evaluate_multi_regime_triggers(
+                last_row.iloc[0], current_price, current_atr=current_atr, 
+                trader_prob=prob_buy, current_vix=current_vix
+            )
+            
+            trend_badge = triggers.get('trend_regime', {}).get('badge', '')
+            rsi_badge = triggers.get('rsi_shield', {}).get('badge', '')
+            vol_badge = triggers.get('volume_surge', {}).get('badge', '')
+            bb_badge = triggers.get('bollinger_squeeze', {}).get('badge', '')
+            vix_status = triggers.get('macro_vix', {}).get('status', 'CALM_MARKET')
+            rsi_status = triggers.get('rsi_shield', {}).get('status', 'NORMAL')
             
             # 5. Logique d'Exécution & Gestion Monétaire Virtuelle
-            if prob_buy > 0.55 and prob_pct >= 60.0:
-                signal_type = "🟢 SIGNAL D'ACHAT"
-                # Allouer 2% du capital disponible par position
-                allocated_cash = pf.get('cash', 0.0) * 0.02
-                qty = int(allocated_cash / current_price) if current_price > 0 else 0
-                if qty > 0:
-                    success, t_msg = execute_equity_trade(pf, yahoo_symbol, qty, "BUY", current_price, current_atr=current_atr)
-                    if success:
-                        save_portfolio(pf)
-                    action_msg = f"Achat de {qty} actions : {t_msg}"
+            if vix_status == 'CIRCUIT_BREAKER_ON':
+                signal_type = "🚨 COUPE-CIRCUIT VIX (> 30)"
+                action_msg = "Achat bloqué : Marché en panique systémique (VIX > 30)."
+            elif prob_buy > 0.55 and prob_pct >= 60.0:
+                if rsi_status == 'OVERBOUGHT_SHIELD':
+                    signal_type = "🛡️ ACHAT BLOQUÉ (BOUCLIER RSI)"
+                    action_msg = "Achat annulé : RSI > 75 (Surchat extrême, risque de pullback immédiat)."
                 else:
-                    action_msg = "Achat ignoré : liquidités insuffisantes pour 1 action."
+                    signal_type = "🟢 SIGNAL D'ACHAT FORT"
+                    # Allouer 2% du capital disponible par position
+                    allocated_cash = pf.get('cash', 0.0) * 0.02
+                    qty = int(allocated_cash / current_price) if current_price > 0 else 0
+                    if qty > 0:
+                        success, t_msg = execute_equity_trade(pf, yahoo_symbol, qty, "BUY", current_price, current_atr=current_atr)
+                        if success:
+                            save_portfolio(pf)
+                        action_msg = f"Achat de {qty} actions : {t_msg}"
+                    else:
+                        action_msg = "Achat ignoré : liquidités insuffisantes pour 1 action."
                     
             elif prob_buy < 0.45 and (100.0 - prob_pct) >= 60.0:
                 signal_type = "🔴 SIGNAL DE VENTE / LIQUIDATION"
@@ -255,8 +277,9 @@ def run_trading_job():
                 else:
                     action_msg = "Vente ignorée : aucune position ouverte sur ce titre."
                     
-            # 6. Alerte enrichie avec Stop-Loss et Take-Profit calculés
+            # 6. Alerte enrichie avec Stop-Loss, Breakeven et Déclencheurs Institutionnels
             sl_level = current_price - (1.5 * current_atr)
+            be_level = current_price + (1.5 * current_atr)
             tp_level = current_price + (3.0 * current_atr)
             
             msg = (
@@ -265,8 +288,13 @@ def run_trading_job():
                 f"🎯 Probabilité : **{max(prob_pct, 100.0-prob_pct):.1f}%**\n"
                 f"🛡️ Value at Risk (VaR 95%) : **{var_95:.2f}%**\n"
                 f"💵 Cours de clôture : **{current_price:.2f} $**\n"
-                f"🛑 Stop-Loss suggéré : **{sl_level:.2f} $** (1.5 ATR)\n"
-                f"🎯 Take-Profit suggéré : **{tp_level:.2f} $** (3.0 ATR)\n"
+                f"🏛️ Régime Macro : {trend_badge}\n"
+                f"🛡️ Bouclier RSI : {rsi_badge}\n"
+                f"🚀 Flux Volume : {vol_badge}\n"
+                f"⚡ Volatilité : {bb_badge}\n"
+                f"🛑 Stop-Loss (1.5 ATR) : **{sl_level:.2f} $**\n"
+                f"🔒 Déclencheur Breakeven (Risque 0) : **{be_level:.2f} $**\n"
+                f"🎯 Take-Profit (3.0 ATR) : **{tp_level:.2f} $**\n"
                 f"⚙️ Action : {action_msg}"
             )
             

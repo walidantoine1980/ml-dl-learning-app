@@ -365,7 +365,193 @@ def join_macro_data(df, macro_df):
 
 
 # =============================================================================
-# 4. MOTEUR MACHINE LEARNING (ENSEMBLE & BACKTEST ÉVÉNEMENTIEL)
+# 4. DÉCLENCHEURS QUANTITATIFS MULTI-RÉGIMES (TRIGGERS ENGINE)
+# =============================================================================
+
+def evaluate_multi_regime_triggers(row, current_price, current_atr=None, trader_prob=None, current_vix=None, iv_annual=None):
+    """
+    Évalue l'ensemble des déclencheurs (triggers) institutionnels multi-régimes :
+    1. Régime de Tendance Macro (SMA 200 / SMA 50)
+    2. Bouclier RSI (Surchat > 75 & Survente Rebond < 30)
+    3. Flux Institutionnel (Volume Surge >= 1.5x)
+    4. Compression de Volatilité (Bollinger Squeeze)
+    5. Coupe-Circuit Macro (VIX > 30)
+    6. Régime de Volatilité Options (IV Rank / IV Level)
+    7. Paliers de Sécurisation (Stop Loss, Breakeven Stop et Take Profit)
+    """
+    if current_atr is None or current_atr <= 0:
+        current_atr = current_price * 0.02
+        
+    triggers = {}
+    
+    # 1. Régime de Tendance Macro
+    sma_200 = float(row.get('SMA_200', 0.0))
+    sma_50 = float(row.get('SMA_50', 0.0))
+    if sma_200 > 0:
+        if current_price > sma_200 and (sma_50 >= sma_200 or sma_50 == 0):
+            triggers['trend_regime'] = {
+                'status': 'BULLISH',
+                'badge': '🟢 Tendance Saine (Bull Market)',
+                'action': 'Achats autorisés avec pleine exposition.',
+                'color': 'green'
+            }
+        elif current_price < sma_200 and (sma_50 <= sma_200 or sma_50 == 0):
+            triggers['trend_regime'] = {
+                'status': 'BEARISH',
+                'badge': '🔴 Tendance Baissière (Bear Market)',
+                'action': 'Prudence : Achats restreints ou taille réduite de 50%.',
+                'color': 'red'
+            }
+        else:
+            triggers['trend_regime'] = {
+                'status': 'NEUTRAL',
+                'badge': '🟡 Zone de Transition / Correction',
+                'action': 'Consolidation en cours, confirmation requise.',
+                'color': 'orange'
+            }
+    else:
+        triggers['trend_regime'] = {
+            'status': 'UNKNOWN',
+            'badge': '⚪ Tendance Neutre',
+            'action': 'Historique insuffisant pour SMA 200.',
+            'color': 'gray'
+        }
+        
+    # 2. Bouclier RSI
+    rsi = float(row.get('RSI', 50.0))
+    if rsi >= 75:
+        triggers['rsi_shield'] = {
+            'status': 'OVERBOUGHT_SHIELD',
+            'badge': f'🛡️ Bouclier Surchat Actif (RSI {rsi:.1f} >= 75)',
+            'action': 'Blocage des nouveaux achats au sommet. Prise de bénéfices recommandée.',
+            'color': 'red'
+        }
+    elif rsi <= 30:
+        triggers['rsi_shield'] = {
+            'status': 'OVERSOLD_OPPORTUNITY',
+            'badge': f'🎯 Opportunité Rebond (RSI {rsi:.1f} <= 30)',
+            'action': "Survente extrême : favorable à un 'Buy the Dip' si le signal ML confirme.",
+            'color': 'green'
+        }
+    else:
+        triggers['rsi_shield'] = {
+            'status': 'NORMAL',
+            'badge': f'✅ RSI Équilibré ({rsi:.1f})',
+            'action': 'Pas de surchauffe ni de panique.',
+            'color': 'blue'
+        }
+        
+    # 3. Flux Institutionnel (Volume Surge)
+    vol_ratio = float(row.get('Volume_Ratio', 1.0))
+    if vol_ratio >= 1.5:
+        triggers['volume_surge'] = {
+            'status': 'INSTITUTIONAL_INFLOW',
+            'badge': f'🚀 Volume Institutionnel Détecté (+{((vol_ratio-1.0)*100):.0f}%)',
+            'action': "Forte participation des 'Mains Fortes' (Smart Money).",
+            'color': 'green'
+        }
+    else:
+        triggers['volume_surge'] = {
+            'status': 'NORMAL_VOLUME',
+            'badge': f'📊 Volume Régulier ({vol_ratio:.2f}x)',
+            'action': "Activité de liquidité standard.",
+            'color': 'gray'
+        }
+        
+    # 4. Compression de Volatilité (Bollinger Squeeze)
+    bb_width = float(row.get('BB_Width', 0.10))
+    bb_upper = float(row.get('BB_Upper', current_price * 1.05))
+    bb_lower = float(row.get('BB_Lower', current_price * 0.95))
+    if bb_width < 0.05:
+        triggers['bollinger_squeeze'] = {
+            'status': 'SQUEEZE_ACTIVE',
+            'badge': f'⚡ Bollinger Squeeze Actif (Largeur {bb_width*100:.1f}%)',
+            'action': 'Volatilité comprimée au maximum : explosion de cours imminente.',
+            'color': 'purple'
+        }
+    elif current_price >= bb_upper:
+        triggers['bollinger_squeeze'] = {
+            'status': 'UPPER_BREAKOUT',
+            'badge': '🔥 Breakout Haussier (Dépassement Bande Supérieure)',
+            'action': 'Momentum de cassure haussière puissant.',
+            'color': 'green'
+        }
+    elif current_price <= bb_lower:
+        triggers['bollinger_squeeze'] = {
+            'status': 'LOWER_BREAKOUT',
+            'badge': '❄️ Cassure Baissière (Sous la Bande Inférieure)',
+            'action': 'Pression vendeuse extrême.',
+            'color': 'red'
+        }
+    else:
+        triggers['bollinger_squeeze'] = {
+            'status': 'NORMAL_BAND',
+            'badge': f'↔️ Fluctuation Intra-Bandes ({bb_width*100:.1f}%)',
+            'action': 'Évolution dans le canal de volatilité normal.',
+            'color': 'gray'
+        }
+        
+    # 5. Coupe-Circuit Macro (VIX)
+    vix = float(current_vix if current_vix is not None else row.get('VIX', 18.0))
+    if vix > 30:
+        triggers['macro_vix'] = {
+            'status': 'CIRCUIT_BREAKER_ON',
+            'badge': f'🚨 COUPE-CIRCUIT VIX ACTIF ({vix:.1f} > 30)',
+            'action': 'Liquidation préventive et passage forcé à 100% Cash.',
+            'color': 'red'
+        }
+    elif vix > 20:
+        triggers['macro_vix'] = {
+            'status': 'ELEVATED_RISK',
+            'badge': f'⚠️ Volatilité Macro Accrue (VIX {vix:.1f})',
+            'action': 'Réduire les tailles de position de 25%.',
+            'color': 'orange'
+        }
+    else:
+        triggers['macro_vix'] = {
+            'status': 'CALM_MARKET',
+            'badge': f'🟢 Marché Directeur Serein (VIX {vix:.1f})',
+            'action': 'Environnement macroéconomique favorable au portage.',
+            'color': 'green'
+        }
+        
+    # 6. Régime de Volatilité Options
+    if iv_annual is not None and iv_annual > 0:
+        if iv_annual >= 0.35:
+            triggers['options_iv'] = {
+                'status': 'HIGH_IV',
+                'badge': f'💰 Volatilité Implicite Élevée ({iv_annual*100:.1f}%)',
+                'action': 'Stratégies VENDEUSES de primes privilégiées (Credit Spreads, Iron Condors).',
+                'color': 'green'
+            }
+        elif iv_annual <= 0.22:
+            triggers['options_iv'] = {
+                'status': 'LOW_IV',
+                'badge': f'🎯 Volatilité Bon Marché ({iv_annual*100:.1f}%)',
+                'action': 'Stratégies ACHETEUSES privilégiées (Long Calls / Puts / Straddles).',
+                'color': 'blue'
+            }
+        else:
+            triggers['options_iv'] = {
+                'status': 'MODERATE_IV',
+                'badge': f'⚖️ Volatilité Moyenne ({iv_annual*100:.1f}%)',
+                'action': 'Spreads directionnels ou strangles adaptés.',
+                'color': 'gray'
+            }
+            
+    # 7. Niveaux de Protection Dynamique
+    triggers['risk_levels'] = {
+        'initial_sl': current_price - (1.5 * current_atr),
+        'breakeven_trigger': current_price + (1.5 * current_atr),
+        'initial_tp': current_price + (3.0 * current_atr),
+        'atr': current_atr
+    }
+    
+    return triggers
+
+
+# =============================================================================
+# 5. MOTEUR MACHINE LEARNING (ENSEMBLE & BACKTEST ÉVÉNEMENTIEL)
 # =============================================================================
 
 class MLTrader:
@@ -502,7 +688,8 @@ class MLTrader:
     def run_event_driven_backtest(
         self, test_data, initial_capital=100000.0, 
         use_atr_stops=True, atr_sl_mult=1.5, atr_tp_mult=3.0,
-        commission_rate=0.0005, slippage_rate=0.0010
+        commission_rate=0.0005, slippage_rate=0.0010,
+        use_breakeven_stop=True
     ):
         """
         Moteur de Backtest Événementiel Réaliste :
@@ -566,11 +753,15 @@ class MLTrader:
                 exit_price = None
                 exit_reason = None
                 
-                # A. Stop-Loss ATR touché en séance
+                # Mise à jour Breakeven Stop : dès que le High dépasse 1R (entry + 1.5 ATR), remonter le SL au prix d'entrée
+                if use_atr_stops and use_breakeven_stop and current_high >= entry_price + (atr_sl_mult * current_atr):
+                    current_sl = max(current_sl, entry_price)
+                
+                # A. Stop-Loss / Breakeven Stop ATR touché en séance
                 if use_atr_stops and current_low <= current_sl:
                     # Exécution au stop loss (ou à l'ouverture si gap baissier)
                     exit_price = min(current_open, current_sl) * (1.0 - slippage_rate)
-                    exit_reason = f"Stop Loss ({atr_sl_mult:.1f} ATR)"
+                    exit_reason = "Breakeven Stop (0 Risque)" if current_sl >= entry_price else f"Stop Loss ({atr_sl_mult:.1f} ATR)"
                 # B. Take-Profit ATR touché en séance
                 elif use_atr_stops and current_high >= current_tp:
                     # Exécution au take profit (ou à l'ouverture si gap haussier)

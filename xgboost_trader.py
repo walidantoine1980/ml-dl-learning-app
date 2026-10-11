@@ -44,7 +44,7 @@ from quant_core import (
     black_scholes, find_strike_for_delta, run_options_backtest_simulation,
     get_portfolio_path, load_portfolio, save_portfolio,
     get_options_portfolio_path, load_options_portfolio, save_options_portfolio,
-    execute_equity_trade
+    execute_equity_trade, evaluate_multi_regime_triggers
 )
 # Le chargement des portefeuilles personnalisés est maintenant géré dynamiquement par tickers_db.py
 
@@ -416,6 +416,35 @@ def run_single_mode(ticker, period, interval, initial_capital, optimize_model, u
                     else:
                         st.warning("Aucune position ouverte sur ce titre.")
 
+        # --- NOUVEAU: COCKPIT DES DÉCLENCHEURS INSTITUTIONNELS (TRIGGERS ENGINE) ---
+        st.divider()
+        st.subheader("🎯 Cockpit des Déclencheurs Institutionnels (Multi-Triggers)")
+        current_vix = float(last_row['VIX'].values[0]) if 'VIX' in last_row.columns and not pd.isna(last_row['VIX'].values[0]) else None
+        triggers = evaluate_multi_regime_triggers(
+            last_row.iloc[0], current_price, current_atr=current_atr, 
+            trader_prob=prob, current_vix=current_vix
+        )
+        
+        trig_c1, trig_c2, trig_c3, trig_c4 = st.columns(4)
+        with trig_c1:
+            st.markdown(f"**Régime Macro**\n\n{triggers['trend_regime']['badge']}")
+            st.caption(triggers['trend_regime']['action'])
+        with trig_c2:
+            st.markdown(f"**Bouclier RSI**\n\n{triggers['rsi_shield']['badge']}")
+            st.caption(triggers['rsi_shield']['action'])
+        with trig_c3:
+            st.markdown(f"**Flux Volume**\n\n{triggers['volume_surge']['badge']}")
+            st.caption(triggers['volume_surge']['action'])
+        with trig_c4:
+            st.markdown(f"**Volatilité & Squeeze**\n\n{triggers['bollinger_squeeze']['badge']}")
+            st.caption(triggers['bollinger_squeeze']['action'])
+            
+        r_levels = triggers.get('risk_levels', {})
+        st.info(
+            f"🔒 **Déclencheur de Sécurisation (Breakeven)** : Dès que le cours atteint **{r_levels.get('breakeven_trigger', 0.0):.2f} $** (+1.5 ATR / 1R de gain), "
+            f"le Stop-Loss initial (**{r_levels.get('initial_sl', 0.0):.2f} $**) est automatiquement remonté à **{current_price:.2f} $** pour un risque nul !"
+        )
+
         # --- NOUVEAU: STRATÉGIE OPTIONS RECOMMANDÉE ---
         st.divider()
         st.subheader("🛡️ Stratégie Dérivée Recommandée (Options)")
@@ -666,36 +695,36 @@ def run_single_mode(ticker, period, interval, initial_capital, optimize_model, u
                     # Dans un VotingClassifier, les modèles entraînés sont dans estimators_
                     fitted_xgb = trader.model.estimators_[0]
                     explainer = shap.TreeExplainer(fitted_xgb)
-                shap_values = explainer.shap_values(last_row[features])
-                
-                if isinstance(shap_values, list):
-                    sv = shap_values[1][0]
-                elif len(shap_values.shape) > 1:
-                    sv = shap_values[0]
-                else:
-                    sv = shap_values
-                
-                shap_df = pd.DataFrame({'Feature': features, 'Contribution': sv})
-                shap_df = shap_df.sort_values(by='Contribution', key=abs, ascending=True).tail(10)
-                
-                fig_shap = go.Figure(go.Waterfall(
-                    name="SHAP", orientation="h",
-                    measure=["relative"] * len(shap_df),
-                    y=shap_df['Feature'],
-                    x=shap_df['Contribution'],
-                    text=[f"{x:+.3f}" for x in shap_df['Contribution']],
-                    textposition="outside",
-                    connector={"line": {"color": "rgb(63, 63, 63)"}},
-                    decreasing={"marker": {"color": "red"}},
-                    increasing={"marker": {"color": "green"}}
-                ))
-                fig_shap.update_layout(
-                    title="Impact des variables sur le dernier signal",
-                    template="plotly_dark", height=400, margin=dict(l=20, r=20, t=40, b=20)
-                )
-                st.plotly_chart(fig_shap, use_container_width=True)
-            except Exception as e:
-                st.error(f"Erreur lors du calcul SHAP : {e}")
+                    shap_values = explainer.shap_values(last_row[features])
+                    
+                    if isinstance(shap_values, list):
+                        sv = shap_values[1][0]
+                    elif len(shap_values.shape) > 1:
+                        sv = shap_values[0]
+                    else:
+                        sv = shap_values
+                    
+                    shap_df = pd.DataFrame({'Feature': features, 'Contribution': sv})
+                    shap_df = shap_df.sort_values(by='Contribution', key=abs, ascending=True).tail(10)
+                    
+                    fig_shap = go.Figure(go.Waterfall(
+                        name="SHAP", orientation="h",
+                        measure=["relative"] * len(shap_df),
+                        y=shap_df['Feature'],
+                        x=shap_df['Contribution'],
+                        text=[f"{x:+.3f}" for x in shap_df['Contribution']],
+                        textposition="outside",
+                        connector={"line": {"color": "rgb(63, 63, 63)"}},
+                        decreasing={"marker": {"color": "red"}},
+                        increasing={"marker": {"color": "green"}}
+                    ))
+                    fig_shap.update_layout(
+                        title="Impact des variables sur le dernier signal",
+                        template="plotly_dark", height=400, margin=dict(l=20, r=20, t=40, b=20)
+                    )
+                    st.plotly_chart(fig_shap, use_container_width=True)
+                except Exception as e:
+                    st.error(f"Erreur lors du calcul SHAP : {e}")
 
             st.divider()
             st.subheader("Importance Globale des Variables")

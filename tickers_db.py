@@ -651,7 +651,40 @@ MAJOR_STOCKS = {
     "Symrise (DE)": "FRA:SY1",
     "Volkswagen Group (DE)": "FRA:VOW3",
     "Vonovia (DE)": "FRA:VNA",
-    "Zalando (DE)": "FRA:ZAL"
+    "Zalando (DE)": "FRA:ZAL",
+    # --- CHAMPIONS MONDIAUX & ASIE / CHINE ---
+    "Taiwan Semiconductor (TSMC) (TW)": "NYSE:TSM",
+    "ASML Holding (NL)": "AMS:ASML",
+    "Arm Holdings (UK)": "NASDAQ:ARM",
+    "Tokyo Electron (JP)": "TYO:8035",
+    "Toyota Motor (JP)": "NYSE:TM",
+    "Sony Group (JP)": "NYSE:SONY",
+    "Novo Nordisk (DK)": "NYSE:NVO",
+    "AstraZeneca (UK)": "NASDAQ:AZN",
+    "Novartis (CH)": "VTX:NOVN",
+    "Roche (CH)": "VTX:ROG",
+    "MercadoLibre (LATAM)": "NASDAQ:MELI",
+    "Sea Limited (SE-ASIA)": "NYSE:SE",
+    "Shopify (CA)": "NYSE:SHOP",
+    "Nu Holdings (Nubank) (LATAM)": "NYSE:NU",
+    "Ferrari (IT)": "NYSE:RACE",
+    "Rio Tinto (UK/AU)": "NYSE:RIO",
+    "BHP Group (AU)": "NYSE:BHP",
+    "Cameco (Uranium) (CA)": "NYSE:CCJ",
+    "Petrobras (BR)": "NYSE:PBR",
+    "Vale (BR)": "NYSE:VALE",
+    "Alibaba Group (CN)": "NYSE:BABA",
+    "Tencent Holdings (CN)": "HKG:0700",
+    "BYD Company (CN)": "HKG:1211",
+    "Baidu (CN)": "NASDAQ:BIDU",
+    "JD.com (CN)": "NASDAQ:JD",
+    "Pinduoduo / PDD Holdings (CN)": "NASDAQ:PDD",
+    "Xiaomi (CN)": "HKG:1810",
+    "Meituan (CN)": "HKG:3690",
+    "NetEase (CN)": "NASDAQ:NTES",
+    "Li Auto (CN)": "NASDAQ:LI",
+    "NIO (CN)": "NYSE:NIO",
+    "XPeng (CN)": "NYSE:XPEV"
 }
 
 PREDEFINED_PORTFOLIOS = {
@@ -673,9 +706,25 @@ PREDEFINED_PORTFOLIOS = {
         "LVMH (FR)", "L'Oréal (FR)", "SAP (DE)", 
         "Schneider Electric (FR)", "Siemens (DE)", "Hermès (FR)"
     ],
+    "Leaders Mondiaux Semi-conducteurs & IA": [
+        "Taiwan Semiconductor (TSMC) (TW)", "ASML Holding (NL)", "Nvidia (US)", 
+        "Broadcom (US)", "Arm Holdings (UK)", "Advanced Micro Devices (US)"
+    ],
+    "Titans Émergents & FinTech (Asie & LatAm)": [
+        "Alibaba Group (CN)", "Tencent Holdings (CN)", "BYD Company (CN)", 
+        "MercadoLibre (LATAM)", "Nu Holdings (Nubank) (LATAM)", "Sea Limited (SE-ASIA)"
+    ],
+    "Santé Mondiale & Pharma Giants": [
+        "Novo Nordisk (DK)", "Lilly (Eli) (US)", "AstraZeneca (UK)", 
+        "Sanofi (FR)", "Novartis (CH)", "AbbVie (US)"
+    ],
+    "Automobile Mondiale & Révolution Électrique": [
+        "Tesla, Inc. (US)", "BYD Company (CN)", "Toyota Motor (JP)", 
+        "Ferrari (IT)", "BMW (DE)", "Mercedes-Benz Group (DE)"
+    ],
     "Tendances Asie / Chine (Tech & EVs)": [
-        # Ajout direct de tickers Yahoo Finance pour la Chine car ils ne sont pas dans MAJOR_STOCKS
-        "BABA", "TCEHY", "BYDDY", "BIDU", "JD"
+        "Alibaba Group (CN)", "Tencent Holdings (CN)", "BYD Company (CN)", 
+        "Baidu (CN)", "JD.com (CN)", "Xiaomi (CN)"
     ]
 }
 
