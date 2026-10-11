@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12%20%7C%203.13-blue.svg)](https://www.python.org/)
 [![Machine Learning](https://img.shields.io/badge/ML-XGBoost%20%7C%20LightGBM%20%7C%20RandomForest-green.svg)](https://xgboost.readthedocs.io/)
 [![Architecture](https://img.shields.io/badge/Architecture-Clean%20%26%20Modular%20(quant__core)-orange.svg)](#architecture-du-projet)
-[![Tests](https://img.shields.io/badge/Tests-Passing%20(7%2F7)-brightgreen.svg)](#-suite-de-tests-automatis%C3%A9s)
+[![Tests](https://img.shields.io/badge/Tests-Passing%20(10%2F10)-brightgreen.svg)](#-suite-de-tests-automatis%C3%A9s)
 
 Un terminal quantitatif complet conçu selon les standards de l'industrie financière. Le système fusionne le **Machine Learning d'Ensemble (XGBoost, LightGBM, Random Forest)**, l'analyse technique stationnaire, le **Traitement du Langage Naturel (NLP)** et le **Pricing d'Options (Black-Scholes & Greeks)** pour générer des signaux de trading robustes et des stratégies de couverture.
 
@@ -122,6 +122,9 @@ Le package inclut un banc d'essai complet [`tests/test_system.py`](file:///H:/Mo
 *   `test_05_black_litterman_allocation` : Normalisation à 100% et contrainte Long-Only.
 *   `test_06_paper_trading_execution` : Traçabilité des ordres et des stops ATR.
 *   `test_07_ticker_conversion_and_multipliers` : Conversion multi-bourses et législation européenne vs américaine.
+*   `test_08_walk_forward_analysis_length_mismatch` : Alignement des longueurs de masques d'entraînement WFA.
+*   `test_09_options_portfolio_and_execution` : Intégrité du portefeuille d'options (`positions` dict), exécution Call/Put et calcul P&L.
+*   `test_10_portfolio_resilience_to_corrupted_json` : Résilience et auto-réparation face à d'anciennes structures de données corrompues.
 
 Pour lancer les tests :
 ```bash

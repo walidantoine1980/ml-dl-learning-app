@@ -56,7 +56,15 @@ def load_portfolio(filepath=PORTFOLIO_FILE):
     if os.path.exists(filepath):
         try:
             with open(filepath, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+                if isinstance(data, dict):
+                    if not isinstance(data.get("positions"), dict):
+                        data["positions"] = {}
+                    if not isinstance(data.get("history"), list):
+                        data["history"] = []
+                    if "cash" not in data or not isinstance(data["cash"], (int, float)):
+                        data["cash"] = 100000.0
+                    return data
         except Exception as e:
             print(f"Erreur de chargement {filepath}: {e}")
     return {"cash": 100000.0, "positions": {}, "history": []}
@@ -82,10 +90,18 @@ def load_options_portfolio(filepath=OPTIONS_PORTFOLIO_FILE):
     if os.path.exists(filepath):
         try:
             with open(filepath, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+                if isinstance(data, dict):
+                    if not isinstance(data.get("positions"), dict):
+                        data["positions"] = {}
+                    if not isinstance(data.get("history"), list):
+                        data["history"] = []
+                    if "cash" not in data or not isinstance(data["cash"], (int, float)):
+                        data["cash"] = 100000.0
+                    return data
         except Exception as e:
             print(f"Erreur de chargement {filepath}: {e}")
-    return {"cash": 100000.0, "positions": [], "history": []}
+    return {"cash": 100000.0, "positions": {}, "history": []}
 
 
 def save_options_portfolio(portfolio, filepath=OPTIONS_PORTFOLIO_FILE):
@@ -1137,3 +1153,85 @@ def execute_equity_trade(portfolio, ticker, qty, action, current_price, current_
             return True, f"Vente virtuelle de {qty_to_sell} actions {ticker} exécutée (PnL: {pnl:+.2f} $)."
         else:
             return False, "Aucune position ouverte sur ce titre."
+
+
+def execute_option_trade(portfolio, ticker, opt_type, strike, days_to_expiry, qty, premium, underlying_price, action="BUY", multiplier=None):
+    """
+    Exécute un ordre d'achat ou de vente de contrat d'options dans le portefeuille d'options.
+    Garantit une structure saine (positions est un dictionnaire et non une liste).
+    """
+    pf = portfolio
+    if not isinstance(pf.get('positions'), dict):
+        pf['positions'] = {}
+    if not isinstance(pf.get('history'), list):
+        pf['history'] = []
+    if 'cash' not in pf or not isinstance(pf['cash'], (int, float)):
+        pf['cash'] = 100000.0
+
+    if multiplier is None:
+        multiplier, _ = get_option_multiplier_and_legislation(ticker)
+
+    opt_type = opt_type.lower()
+    cost_per_contract = premium * multiplier
+    total_cost = qty * cost_per_contract
+
+    if action.upper() == "BUY":
+        if pf['cash'] >= total_cost:
+            pf['cash'] -= total_cost
+            contract_id = f"{ticker}_{opt_type.upper()}_{strike}_{days_to_expiry}d_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            pf['positions'][contract_id] = {
+                'ticker': ticker,
+                'type': opt_type,
+                'strike': float(strike),
+                'days_to_expiry': int(days_to_expiry),
+                'premium': float(premium),
+                'qty': int(qty),
+                'multiplier': int(multiplier),
+                'underlying_price_at_buy': float(underlying_price),
+                'buy_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            pf['history'].append({
+                'date': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                'action': 'BUY OPTION',
+                'ticker': ticker,
+                'contract': f"{opt_type.upper()} Strike {strike}",
+                'qty': int(qty),
+                'premium_paid': float(premium),
+                'total_cost': float(total_cost)
+            })
+            return True, contract_id, f"{qty} contrat(s) {opt_type.upper()} {ticker} acheté(s) avec succès."
+        else:
+            return False, None, "Liquidités virtuelles insuffisantes pour cet achat d'option."
+    elif action.upper() in ["SELL", "CLOSE"]:
+        contract_id = None
+        for cid, data in pf['positions'].items():
+            if data.get('ticker') == ticker and data.get('type') == opt_type and abs(data.get('strike', 0) - strike) < 1e-4:
+                contract_id = cid
+                break
+        if contract_id and contract_id in pf['positions']:
+            pos = pf['positions'][contract_id]
+            pos_qty = pos.get('qty', 0)
+            qty_to_sell = min(qty, pos_qty)
+            revenue = qty_to_sell * premium * multiplier
+            pf['cash'] += revenue
+            buy_val = qty_to_sell * pos.get('premium', premium) * multiplier
+            pnl = revenue - buy_val
+            pf['history'].append({
+                'date': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                'action': 'SELL OPTION',
+                'ticker': ticker,
+                'contract': f"{opt_type.upper()} Strike {strike}",
+                'qty': int(qty_to_sell),
+                'premium_sold': float(premium),
+                'total_received': float(revenue),
+                'pnl': float(pnl)
+            })
+            if qty_to_sell >= pos_qty:
+                del pf['positions'][contract_id]
+            else:
+                pf['positions'][contract_id]['qty'] -= qty_to_sell
+            return True, contract_id, f"{qty_to_sell} contrat(s) {opt_type.upper()} {ticker} revendu(s) avec succès (PnL: {pnl:+.2f} $)."
+        else:
+            return False, None, "Contrat d'option introuvable dans le portefeuille."
+    return False, None, f"Action {action} non supportée."
+

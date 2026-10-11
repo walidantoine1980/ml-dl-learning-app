@@ -347,13 +347,17 @@ def run_single_mode(ticker, period, interval, initial_capital, optimize_model, u
             if prob > 0.55 and position_size > 0:
                 if st.button("🚀 Exécuter sur le Paper Trading"):
                     pf = load_portfolio()
+                    if not isinstance(pf.get('positions'), dict):
+                        pf['positions'] = {}
+                    if not isinstance(pf.get('history'), list):
+                        pf['history'] = []
                     # Simulation Event-Driven (Slippage + Commissions)
                     exec_price = current_price * 1.0010  # +0.10% Slippage
                     cost = position_size * exec_price
                     commission = cost * 0.0005           # +0.05% Frais
                     total_cost = cost + commission
                     
-                    if pf['cash'] >= total_cost:
+                    if pf.get('cash', 0.0) >= total_cost:
                         pf['cash'] -= total_cost
                         # Update positions
                         if ticker in pf['positions']:
@@ -380,7 +384,11 @@ def run_single_mode(ticker, period, interval, initial_capital, optimize_model, u
             elif prob < 0.45:
                 if st.button("🔴 Liquider Position (Paper Trading)"):
                     pf = load_portfolio()
-                    if ticker in pf['positions'] and pf['positions'][ticker]['qty'] > 0:
+                    if not isinstance(pf.get('positions'), dict):
+                        pf['positions'] = {}
+                    if not isinstance(pf.get('history'), list):
+                        pf['history'] = []
+                    if ticker in pf['positions'] and pf['positions'][ticker].get('qty', 0) > 0:
                         qty = pf['positions'][ticker]['qty']
                         
                         # Simulation Event-Driven (Slippage + Commissions)
@@ -445,7 +453,11 @@ def run_single_mode(ticker, period, interval, initial_capital, optimize_model, u
                 
                 if st.button(f"🚀 Acheter {qty_to_buy} Contrats CALL (Paper Trading Options)"):
                     pf_opt = load_options_portfolio()
-                    if pf_opt['cash'] >= total_premium:
+                    if not isinstance(pf_opt.get('positions'), dict):
+                        pf_opt['positions'] = {}
+                    if not isinstance(pf_opt.get('history'), list):
+                        pf_opt['history'] = []
+                    if pf_opt.get('cash', 0.0) >= total_premium:
                         pf_opt['cash'] -= total_premium
                         contract_id = f"{ticker}_CALL_{strike_opt}_{t_opt_days}d_{datetime.now().strftime('%Y%m%d%H%M%S')}"
                         pf_opt['positions'][contract_id] = {
@@ -503,7 +515,11 @@ def run_single_mode(ticker, period, interval, initial_capital, optimize_model, u
                 
                 if st.button(f"🔴 Acheter {qty_to_buy} Contrats PUT (Paper Trading Options)"):
                     pf_opt = load_options_portfolio()
-                    if pf_opt['cash'] >= total_premium:
+                    if not isinstance(pf_opt.get('positions'), dict):
+                        pf_opt['positions'] = {}
+                    if not isinstance(pf_opt.get('history'), list):
+                        pf_opt['history'] = []
+                    if pf_opt.get('cash', 0.0) >= total_premium:
                         pf_opt['cash'] -= total_premium
                         contract_id = f"{ticker}_PUT_{strike_opt}_{t_opt_days}d_{datetime.now().strftime('%Y%m%d%H%M%S')}"
                         pf_opt['positions'][contract_id] = {
@@ -794,7 +810,11 @@ def run_portfolio_mode(tickers, period, interval, initial_capital, optimize_mode
                         if amount > 10: # Ne proposer l'investissement que si le montant est significatif
                             if st.button(f"🛒 Investir {t}", key=f"inv_{t}"):
                                 pf = load_portfolio()
-                                if pf['cash'] < amount:
+                                if not isinstance(pf.get('positions'), dict):
+                                    pf['positions'] = {}
+                                if not isinstance(pf.get('history'), list):
+                                    pf['history'] = []
+                                if pf.get('cash', 0.0) < amount:
                                     st.error("Liquidités insuffisantes !")
                                 else:
                                     try:
@@ -1332,6 +1352,10 @@ def page_paper_trading():
     st.markdown("Exécutez vos stratégies en conditions réelles sans risquer votre argent. Solde de départ : **100 000 $**.")
     
     pf = load_portfolio()
+    if not isinstance(pf.get('positions'), dict):
+        pf['positions'] = {}
+    if not isinstance(pf.get('history'), list):
+        pf['history'] = []
     
     st.header("💼 Mon Portefeuille Virtuel")
     c1, c2, c3 = st.columns(3)
@@ -1425,6 +1449,10 @@ def page_options_paper_trading():
     st.markdown("Exécutez vos stratégies d'options (Call/Put) en conditions réelles sans risquer votre argent. Solde de départ indépendant : **100 000 $**.")
     
     pf = load_options_portfolio()
+    if not isinstance(pf.get('positions'), dict):
+        pf['positions'] = {}
+    if not isinstance(pf.get('history'), list):
+        pf['history'] = []
     
     st.header("💼 Mon Portefeuille Virtuel (Options)")
     c1, c2, c3 = st.columns(3)
@@ -1824,7 +1852,11 @@ def page_options_pricing(tickers):
     
     if st.button("✅ Acheter ce contrat (Paper Trading)", use_container_width=True):
         pf_opt = load_options_portfolio()
-        if pf_opt['cash'] >= cout_total:
+        if not isinstance(pf_opt.get('positions'), dict):
+            pf_opt['positions'] = {}
+        if not isinstance(pf_opt.get('history'), list):
+            pf_opt['history'] = []
+        if pf_opt.get('cash', 0.0) >= cout_total:
             pf_opt['cash'] -= cout_total
             contract_id = f"{ticker}_{opt_type.upper()}_{K}_{T_days}d_{datetime.now().strftime('%Y%m%d%H%M%S')}"
             pf_opt['positions'][contract_id] = {

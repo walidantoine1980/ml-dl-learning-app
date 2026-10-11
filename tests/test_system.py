@@ -23,8 +23,9 @@ if PROJECT_ROOT not in sys.path:
 
 from quant_core import (
     add_features, MLTrader, black_scholes, find_strike_for_delta,
-    get_black_litterman_weights, execute_equity_trade,
-    convert_google_to_yahoo_ticker, get_option_multiplier_and_legislation
+    get_black_litterman_weights, execute_equity_trade, execute_option_trade,
+    convert_google_to_yahoo_ticker, get_option_multiplier_and_legislation,
+    load_portfolio, save_portfolio, load_options_portfolio, save_options_portfolio
 )
 
 
@@ -168,6 +169,80 @@ class TestQuantCore(unittest.TestCase):
         mult_eu, leg_eu = get_option_multiplier_and_legislation("MC.PA")
         self.assertEqual(mult_eu, 10)
 
+    def test_08_walk_forward_analysis_length_mismatch(self):
+        """Vérifie que la WFA s'exécute sans erreur même si data et valid_train ont des longueurs divergentes."""
+        # Création d'un dataset multi-années
+        dates = pd.date_range("2020-01-01", periods=1000, freq="B")
+        df = pd.DataFrame({
+            'Open': 100.0 + np.random.randn(1000).cumsum(),
+            'High': 102.0 + np.random.randn(1000).cumsum(),
+            'Low': 98.0 + np.random.randn(1000).cumsum(),
+            'Close': 100.0 + np.random.randn(1000).cumsum(),
+            'Volume': 1000000 + np.random.randint(0, 50000, size=1000)
+        }, index=dates)
+        
+        df_feat = add_features(df)
+        # Injection volontaire de plusieurs NaN au milieu et à la fin pour tester la robustesse des tailles
+        df_feat.iloc[100:110, df_feat.columns.get_loc('Target')] = np.nan
+        
+        trader = MLTrader()
+        features = trader.train(df_feat, optimize=False, use_wfa=True, wfa_train_window="2Y", wfa_step="6M")
+        self.assertTrue(trader.is_trained, "La WFA doit s'entraîner sans ValueError de longueur.")
+        self.assertIsNotNone(trader.backtest_results, "Le backtest WFA doit contenir des résultats.")
+
+    def test_09_options_portfolio_and_execution(self):
+        """Vérifie l'intégrité du portefeuille d'options (dict vs list) et l'achat/revente de contrats."""
+        pf_opt = load_options_portfolio("non_existent_file_test.json")
+        self.assertIsInstance(pf_opt, dict, "Le portefeuille d'options doit être un dictionnaire.")
+        self.assertIsInstance(pf_opt["positions"], dict, "positions doit impérativement être un dict (et JAMAIS une liste).")
+        self.assertIsInstance(pf_opt["history"], list, "history doit être une liste.")
+        self.assertEqual(pf_opt["cash"], 100000.0, "Le solde initial d'options doit être 100 000 $.")
+        
+        # Test Achat Option CALL (Norme US : x100)
+        success, contract_id, msg = execute_option_trade(
+            pf_opt, ticker="AAPL", opt_type="call", strike=150.0,
+            days_to_expiry=30, qty=2, premium=5.0, underlying_price=150.0, action="BUY"
+        )
+        self.assertTrue(success, "L'achat d'option doit réussir.")
+        self.assertIsNotNone(contract_id, "Un contract_id doit être généré.")
+        self.assertIn(contract_id, pf_opt["positions"], "Le contrat doit être stocké par sa clé contract_id.")
+        # Coût = 2 contrats * 5.0 * 100 = 1000.0 $
+        self.assertEqual(pf_opt["cash"], 99000.0, "Le cash doit être débité de 1000 $.")
+        
+        # Test Revente Option CALL
+        success_sell, sold_id, msg_sell = execute_option_trade(
+            pf_opt, ticker="AAPL", opt_type="call", strike=150.0,
+            days_to_expiry=20, qty=2, premium=7.0, underlying_price=155.0, action="SELL"
+        )
+        self.assertTrue(success_sell, "La revente d'option doit réussir.")
+        self.assertNotIn(contract_id, pf_opt["positions"], "La position d'option soldée doit être purgée.")
+        # Recette = 2 contrats * 7.0 * 100 = 1400.0 $ -> Cash final = 99000 + 1400 = 100400 $
+        self.assertEqual(pf_opt["cash"], 100400.0, "Le cash doit inclure le produit de revente et la plus-value.")
+
+    def test_10_portfolio_resilience_to_corrupted_json(self):
+        """Vérifie la résilience du chargeur si un fichier JSON contenait 'positions': [] (ancienne anomalie)."""
+        import tempfile
+        import json
+        
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as tf:
+            # Simule l'ancienne structure erronée où positions était une liste vide
+            json.dump({"cash": 50000.0, "positions": [], "history": []}, tf)
+            temp_path = tf.name
+            
+        try:
+            # Doit réparer et normaliser automatiquement en dictionnaire
+            loaded = load_options_portfolio(temp_path)
+            self.assertIsInstance(loaded["positions"], dict, "Un 'positions': [] doit être converti en {} dict.")
+            self.assertEqual(loaded["cash"], 50000.0)
+            
+            # Vérifier qu'on peut immédiatement indexer une string sans TypeError
+            loaded["positions"]["TEST_CONTRACT"] = {"qty": 1}
+            self.assertEqual(loaded["positions"]["TEST_CONTRACT"]["qty"], 1)
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
 
 if __name__ == "__main__":
     unittest.main()
+
