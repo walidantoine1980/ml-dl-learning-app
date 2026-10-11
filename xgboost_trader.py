@@ -155,9 +155,17 @@ st.markdown("""
     }
     .stMetric {
         background-color: #1e2130;
-        padding: 15px;
+        padding: 12px;
         border-radius: 10px;
         border: 1px solid #3e4259;
+    }
+    [data-testid="stMetricValue"] {
+        font-size: 1.25rem !important;
+        white-space: normal !important;
+        word-break: break-word !important;
+    }
+    [data-testid="stMetricLabel"] {
+        font-size: 0.9rem !important;
     }
     .signal-buy {
         color: #00ff00;
@@ -324,25 +332,58 @@ def run_single_mode(ticker, period, interval, initial_capital, optimize_model, u
                 st.warning("Kelly incalculable. Risque défaut: 1%")
                 
             max_loss = initial_capital * risk_pct
-            position_size = int(max_loss / risk_per_share) if risk_per_share > 0 else 0
-            total_investment = position_size * current_price
             
-            if total_investment > initial_capital:
-                position_size = int(initial_capital / current_price)
+            if prob > 0.55:
+                # Régime ACHAT
+                stop_loss = current_price - (1.5 * current_atr)
+                take_profit = current_price + (3.0 * current_atr)
+                risk_per_share = abs(current_price - stop_loss)
+                position_size = int(max_loss / risk_per_share) if risk_per_share > 0 else 0
                 total_investment = position_size * current_price
+                if total_investment > initial_capital:
+                    position_size = int(initial_capital / current_price)
+                    total_investment = position_size * current_price
+                st.markdown(f"""
+                - **Orientation** : 🟢 **ACHAT FORT (LONG)**
+                - **Prix Actuel** : {current_price:.2f} $
+                - **Taille de position** : {position_size} actions ({total_investment:,.2f} $)
+                - **Stop-Loss (1.5 ATR)** : <span style='color:red'>{stop_loss:.2f} $</span>
+                - **Take-Profit (3.0 ATR)** : <span style='color:green'>{take_profit:.2f} $</span>
+                """, unsafe_allow_html=True)
+            elif prob < 0.45:
+                # Régime VENTE / SHORT
+                stop_loss = current_price + (1.5 * current_atr)
+                take_profit = current_price - (3.0 * current_atr)
+                position_size = 0
+                total_investment = 0.0
+                st.markdown(f"""
+                - **Orientation** : 🔴 **VENTE / CASH (SHORT)**
+                - **Prix Actuel** : {current_price:.2f} $
+                - **Position suggérée** : **0 action (100% Cash / Put)**
+                - **Invalidation Haussière (SL)** : <span style='color:red'>{stop_loss:.2f} $</span>
+                - **Cible Baissière (TP)** : <span style='color:green'>{take_profit:.2f} $</span>
+                """, unsafe_allow_html=True)
+            else:
+                # Régime NEUTRE / ATTENTE
+                sl_ref = current_price - (1.5 * current_atr)
+                tp_ref = current_price + (3.0 * current_atr)
+                position_size = 0
+                total_investment = 0.0
+                stop_loss = sl_ref
+                take_profit = tp_ref
+                st.markdown(f"""
+                - **Orientation** : ⚪ **NEUTRE (ATTENTE)**
+                - **Prix Actuel** : {current_price:.2f} $
+                - **Position suggérée** : **0 action (En attente de signal clair)**
+                - *Niveaux de référence Achat : SL = {sl_ref:.2f} $ | TP = {tp_ref:.2f} $*
+                """)
                 
-            st.markdown(f"""
-            - **Prix Actuel** : {current_price:.2f} $
-            - **Taille de position** : {position_size} actions ({total_investment:,.2f} $)
-            - **Stop-Loss (1.5 ATR)** : <span style='color:red'>{stop_loss:.2f} $</span>
-            - **Take-Profit (3.0 ATR)** : <span style='color:green'>{take_profit:.2f} $</span>
-            """, unsafe_allow_html=True)
-            
         with c4:
             st.subheader("📑 Exécution & Export")
+            sig_name = 'ACHAT' if prob > 0.55 else ('VENTE/SHORT' if prob < 0.45 else 'NEUTRE/ATTENTE')
             export_text = f"DATE: {datetime.now().strftime('%Y-%m-%d')}\n"
             export_text += f"ACTION: {ticker}\n"
-            export_text += f"SIGNAL: {'ACHAT' if prob > 0.55 else 'VENTE/CASH'}\n"
+            export_text += f"SIGNAL: {sig_name}\n"
             export_text += f"PRIX ENTREE: {current_price:.2f} $\n"
             export_text += f"STOP-LOSS: {stop_loss:.2f} $\n"
             export_text += f"TAKE-PROFIT: {take_profit:.2f} $\n"
