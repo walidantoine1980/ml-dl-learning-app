@@ -997,7 +997,11 @@ class MLTrader:
                     progress_callback(prog)
                     
             if len(all_test_data) == 0:
-                return features
+                raise ValueError(
+                    f"Historique insuffisant pour la fenêtre d'entraînement WFA ({wfa_train_window}). "
+                    f"La période d'historique choisie ne contient pas assez d'échantillons pour constituer les sous-fenêtres. "
+                    f"Veuillez choisir une période d'historique plus étendue (ex: 5y ou 10y) ou raccourcir la fenêtre WFA (ex: 2Y)."
+                )
                 
             final_test_data = pd.concat(all_test_data)
             self.model = m # Modèle final le plus récent
@@ -1040,6 +1044,7 @@ class MLTrader:
             'feature_importances': self.feature_importances,
             'backtest_results': self.backtest_results,
             'is_trained': self.is_trained,
+            'features': getattr(self, 'features', []),
             'advanced_metrics': getattr(self, 'advanced_metrics', {}),
             'closed_trades': getattr(self, 'closed_trades', [])
         }
@@ -1057,6 +1062,7 @@ class MLTrader:
         trader.feature_importances = state['feature_importances']
         trader.backtest_results = state['backtest_results']
         trader.is_trained = state['is_trained']
+        trader.features = state.get('features', [])
         trader.advanced_metrics = state.get('advanced_metrics', {})
         trader.closed_trades = state.get('closed_trades', [])
         return trader

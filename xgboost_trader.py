@@ -216,9 +216,18 @@ def run_single_mode(ticker, period, interval, initial_capital, optimize_model, u
     with col1:
         if st.button("🧠 Entraîner l'IA sur cette action", use_container_width=True):
             with st.status("Entraînement en cours...") as status:
-                features = trader.train(df, optimize=optimize_model, use_wfa=use_wfa, wfa_train_window=wfa_train_window, wfa_step=wfa_step, wfa_start_date=wfa_start_date, wfa_end_date=wfa_end_date)
-                st.session_state[f"features_{ticker}"] = features
-                status.update(label="✅ Modèle entraîné !", state="complete")
+                try:
+                    features = trader.train(df, optimize=optimize_model, use_wfa=use_wfa, wfa_train_window=wfa_train_window, wfa_step=wfa_step, wfa_start_date=wfa_start_date, wfa_end_date=wfa_end_date)
+                    st.session_state[f"features_{ticker}"] = features
+                    status.update(label="✅ Modèle entraîné !", state="complete")
+                except ValueError as ve:
+                    status.update(label="❌ Erreur de paramétrage WFA", state="error")
+                    st.error(f"⚠️ {ve}")
+                    return
+                except Exception as ex:
+                    status.update(label="❌ Erreur d'entraînement", state="error")
+                    st.error(f"Erreur imprévue : {ex}")
+                    return
                 
     with col2:
         if trader.is_trained:
@@ -829,7 +838,12 @@ def run_portfolio_mode(tickers, period, interval, initial_capital, optimize_mode
                         volatility_dict[t] = float(vol_hist)
 
             # --- 1. Poids d'Équilibre (Risk Parity) ---
+            if not volatility_dict:
+                st.error("❌ Aucune donnée de cours valide n'a pu être récupérée pour les tickers sélectionnés.")
+                return
             sum_inv_vol = sum(1/v for v in volatility_dict.values())
+            if sum_inv_vol == 0:
+                sum_inv_vol = 1e-9
             market_weights = {t: (1/v)/sum_inv_vol for t, v in volatility_dict.items()}
             
             # --- 2. Entraînement IA & Génération des Vues ---
@@ -841,7 +855,12 @@ def run_portfolio_mode(tickers, period, interval, initial_capital, optimize_mode
                 if macro_df is not None:
                     df = join_macro_data(df, macro_df)
                 trader = MLTrader()
-                features = trader.train(df, optimize=optimize_model, use_wfa=use_wfa, wfa_train_window=wfa_train_window, wfa_step=wfa_step, wfa_start_date=wfa_start_date, wfa_end_date=wfa_end_date)
+                try:
+                    features = trader.train(df, optimize=optimize_model, use_wfa=use_wfa, wfa_train_window=wfa_train_window, wfa_step=wfa_step, wfa_start_date=wfa_start_date, wfa_end_date=wfa_end_date)
+                except ValueError as ve:
+                    st.warning(f"⚠️ {t} : {ve}")
+                    # Repli sur entraînement standard
+                    features = trader.train(df, optimize=optimize_model, use_wfa=False)
                 st.session_state[f"port_trader_{t}"] = trader
                 
                 # Prédiction actuelle pour le Black-Litterman (La Vue)

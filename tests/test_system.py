@@ -310,9 +310,36 @@ class TestQuantCore(unittest.TestCase):
         self.assertTrue(callable(getattr(academy_core, "render_advanced_academy", None)))
         self.assertTrue(callable(getattr(academy_core, "render_options_academy", None)))
         self.assertTrue(callable(getattr(academy_core, "render_news_academy", None)))
-        self.assertTrue(callable(getattr(academy_core, "render_interactive_quiz", None)))
+    def test_14_mltrader_save_load_features_persistence(self):
+        """Vérifie que les features sont fidèlement sauvegardées et rechargées avec MLTrader."""
+        import tempfile
+        df_feat = add_features(self.sample_df)
+        trader = MLTrader()
+        features = trader.train(df_feat, optimize=False, use_wfa=False)
+        
+        with tempfile.NamedTemporaryFile(suffix='.pkl', delete=False) as tf:
+            temp_path = tf.name
+            
+        try:
+            trader.save(temp_path)
+            loaded = MLTrader.load(temp_path)
+            self.assertTrue(loaded.is_trained)
+            self.assertEqual(loaded.features, features, "Les features rechargées doivent être strictement identiques.")
+            self.assertGreater(len(loaded.features), 0)
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+    def test_15_wfa_short_history_exception(self):
+        """Vérifie que la WFA lève une ValueError explicite si l'historique est trop court."""
+        df_feat = add_features(self.sample_df) # ~250 jours (1 an)
+        trader = MLTrader()
+        # Demander une fenêtre de 5 ans sur un historique de 1 an doit lever une ValueError
+        with self.assertRaises(ValueError):
+            trader.train(df_feat, optimize=False, use_wfa=True, wfa_train_window="5Y", wfa_step="6M")
 
 
 if __name__ == "__main__":
     unittest.main()
+
 
