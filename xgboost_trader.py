@@ -327,9 +327,12 @@ def run_single_mode(ticker, period, interval, initial_capital, optimize_model, u
             if kelly_pct > 0:
                 risk_pct = min(half_kelly_pct, 0.05) # Max 5% du compte
                 st.info(f"Half-Kelly Actif : {risk_pct*100:.2f}% (Plein Kelly: {kelly_pct*100:.2f}%)")
+            elif adv_m.get('Total Trades', 0) > 0:
+                risk_pct = 0.01
+                st.warning("Edge statistique insuffisant (Kelly ≤ 0). Risque prudent par défaut : 1.00%")
             else:
-                risk_pct = 0.01 # 1% par défaut si Kelly=0
-                st.warning("Kelly incalculable. Risque défaut: 1%")
+                risk_pct = 0.01
+                st.info("Historique de trades insuffisant pour Kelly. Risque par défaut : 1.00%")
                 
             max_loss = initial_capital * risk_pct
             
@@ -1824,11 +1827,15 @@ Ne mets pas de blabla d'introduction de chatbot, va droit au but avec un ton tr�
                 # 3. Generation
                 success = False
                 all_errors = {}
-                # Les anciens modèles 1.0 et 1.5 ont été dépréciés par Google.
+                # Modèles récents et stables recommandés par l'API Google en 2026
                 models_to_try = [
-                    'gemini-3-pro-preview',
+                    'gemini-3.8-flash',
+                    'gemini-3.1-pro-preview',
+                    'gemini-3.1-pro',
+                    'gemini-2.0-flash',
+                    'gemini-2.5-flash',
                     'gemini-2.5-pro',
-                    'gemini-2.5-flash'
+                    'gemini-1.5-flash'
                 ]
                 
                 response = None
@@ -1844,9 +1851,28 @@ Ne mets pas de blabla d'introduction de chatbot, va droit au but avec un ton tr�
                         continue
                         
                 if not success:
-                    st.error("Aucun modèle Gemini n'a pu traiter la requête. Voici les raisons exactes renvoyées par Google pour chaque modèle testé :")
-                    for m, err in all_errors.items():
-                        st.warning(f"**{m}** : {err}")
+                    st.error("Aucun modèle Gemini n'a pu traiter la requête.")
+                    
+                    # Détection spécifique du blocage de service ou clé restreinte
+                    if any("API_KEY_SERVICE_BLOCKED" in str(err) for err in all_errors.values()):
+                        st.error("""
+                        ### 🔑 Diagnostic : Votre clé API a le service Gemini bloqué (Code 403 - API_KEY_SERVICE_BLOCKED)
+                        
+                        Ce blocage est causé par la configuration de votre clé sur Google Cloud (Projet `283448164473`) :
+                        
+                        1. **Méthode Recommandée (La plus rapide - 30 sec)** :
+                           - Rendez-vous sur **[Google AI Studio](https://aistudio.google.com/app/apikey)**.
+                           - Cliquez sur **"Create API Key"** -> **"Create API key in new project"**.
+                           - Copiez cette clé neuve (elle n'a aucune restriction et l'API Gemini est activée par défaut).
+                           - Collez-la dans la barre latérale sous `🔑 Clé API Gemini`.
+                        
+                        2. **Si vous tenez à conserver votre projet Google Cloud existant** :
+                           - **Activez l'API** : Allez sur [Activer Generative Language API](https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com) et cliquez sur **ACTIVER**.
+                           - **Supprimez les restrictions de la clé** : Dans Google Cloud Console > Identifiants > Cliquez sur votre clé API. Sous *Restrictions d'API*, cochez **"Ne pas restreindre la clé"** (ou ajoutez `Generative Language API` à la liste autorisée).
+                        """)
+                    else:
+                        for m, err in all_errors.items():
+                            st.warning(f"**{m}** : {err}")
                     return
                 st.success("Analyse terminée avec succès !")
                 st.markdown(response.text)
