@@ -1751,8 +1751,19 @@ def page_rag_gemini(tickers, gemini_api_key):
         return
         
     if not gemini_api_key:
-        st.warning("⚠️ Veuillez entrer votre Clé API Gemini dans le menu de gauche pour activer ce module.")
-        st.info("Vous pouvez en générer une gratuitement sur [Google AI Studio](https://aistudio.google.com/).")
+        gemini_api_key = os.environ.get("GEMINI_API_KEY", "")
+        
+    if not gemini_api_key:
+        st.warning("⚠️ Clé API Gemini non configurée.")
+        st.info("""
+        ### 🔑 Comment obtenir votre Clé API Gemini 100% Gratuite en 30 secondes :
+        1. Rendez-vous sur le portail officiel : **[Google AI Studio (Lien direct)](https://aistudio.google.com/app/apikey)**.
+        2. Connectez-vous avec votre compte Google (aucun moyen de paiement ni carte bancaire requis).
+        3. Cliquez sur le bouton bleu **"Create API key"** -> **"Create API key in new project"**.
+        4. Copiez votre clé (commençant par `AIzaSy...`) et collez-la dans le champ `🔑 Clé API Gemini` dans le menu latéral à gauche.
+        
+        💡 **Astuce Serveur / VPS** : Vous pouvez également définir la variable d'environnement `GEMINI_API_KEY=AIzaSy...` sur votre machine ou dans un fichier `.env`. L'application la détectera alors automatiquement sans aucune saisie manuelle !
+        """)
         return
     # Configure inside the loop now
     if not tickers:
@@ -2240,7 +2251,13 @@ def main():
     st.sidebar.divider()
     st.sidebar.header("⚙️ Configuration Globale")
     
-    gemini_api_key = st.sidebar.text_input("🔑 Clé API Gemini (Optionnel)", type="password", help="Nécessaire uniquement pour le module d'Analyse RAG. Ne jamais écrire en dur dans le code !")
+    default_gemini_key = os.environ.get("GEMINI_API_KEY", "")
+    gemini_api_key = st.sidebar.text_input(
+        "🔑 Clé API Gemini (Optionnel)", 
+        value=default_gemini_key, 
+        type="password", 
+        help="Nécessaire uniquement pour le module d'Analyse RAG. Obtenez une clé 100% gratuite sur https://aistudio.google.com/app/apikey"
+    )
     
     
     # --- NOUVEAU : Sélection rapide de portefeuilles ---
