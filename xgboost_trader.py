@@ -42,8 +42,8 @@ from quant_core import (
     MLTrader, convert_google_to_yahoo_ticker, get_company_name_from_yahoo,
     get_option_multiplier_and_legislation, get_black_litterman_weights,
     black_scholes, find_strike_for_delta, run_options_backtest_simulation,
-    get_portfolio_path, load_portfolio, save_portfolio,
-    get_options_portfolio_path, load_options_portfolio, save_options_portfolio,
+    get_portfolio_path, load_portfolio, save_portfolio, reset_portfolio,
+    get_options_portfolio_path, load_options_portfolio, save_options_portfolio, reset_options_portfolio,
     execute_equity_trade, evaluate_multi_regime_triggers
 )
 from academy_core import (
@@ -411,7 +411,7 @@ def run_single_mode(ticker, period, interval, initial_capital, optimize_model, u
             
             # --- PAPER TRADING BUTTON ---
             if prob > 0.55 and position_size > 0:
-                if st.button("🚀 Exécuter sur le Paper Trading"):
+                if st.button("🚀 Exécuter sur le Paper Trading", key=f"exec_paper_buy_{ticker}"):
                     pf = load_portfolio()
                     if not isinstance(pf.get('positions'), dict):
                         pf['positions'] = {}
@@ -431,9 +431,9 @@ def run_single_mode(ticker, period, interval, initial_capital, optimize_model, u
                             old_price = pf['positions'][ticker]['avg_price']
                             new_qty = old_qty + position_size
                             new_price = ((old_qty * old_price) + total_cost) / new_qty
-                            pf['positions'][ticker] = {'qty': new_qty, 'avg_price': new_price}
+                            pf['positions'][ticker] = {'qty': new_qty, 'avg_price': new_price, 'stop_loss': float(stop_loss), 'take_profit': float(take_profit)}
                         else:
-                            pf['positions'][ticker] = {'qty': position_size, 'avg_price': exec_price}
+                            pf['positions'][ticker] = {'qty': position_size, 'avg_price': exec_price, 'stop_loss': float(stop_loss), 'take_profit': float(take_profit)}
                         
                         pf['history'].append({
                             'date': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -448,7 +448,7 @@ def run_single_mode(ticker, period, interval, initial_capital, optimize_model, u
                     else:
                         st.error("Fonds insuffisants dans le Paper Trading.")
             elif prob < 0.45:
-                if st.button("🔴 Liquider Position (Paper Trading)"):
+                if st.button("🔴 Liquider Position (Paper Trading)", key=f"exec_paper_sell_{ticker}"):
                     pf = load_portfolio()
                     if not isinstance(pf.get('positions'), dict):
                         pf['positions'] = {}
@@ -546,7 +546,7 @@ def run_single_mode(ticker, period, interval, initial_capital, optimize_model, u
                 qty_to_buy = max(1, qty_to_buy) # Au moins 1 contrat
                 total_premium = qty_to_buy * cost_per_contract
                 
-                if st.button(f"🚀 Acheter {qty_to_buy} Contrats CALL (Paper Trading Options)"):
+                if st.button(f"🚀 Acheter {qty_to_buy} Contrats CALL (Paper Trading Options)", key=f"exec_opt_call_{ticker}"):
                     pf_opt = load_options_portfolio()
                     if not isinstance(pf_opt.get('positions'), dict):
                         pf_opt['positions'] = {}
@@ -558,12 +558,12 @@ def run_single_mode(ticker, period, interval, initial_capital, optimize_model, u
                         pf_opt['positions'][contract_id] = {
                             'ticker': ticker,
                             'type': 'call',
-                            'strike': strike_opt,
-                            'days_to_expiry': t_opt_days,
-                            'premium': price_opt,
-                            'qty': qty_to_buy,
-                            'multiplier': multiplier,
-                            'underlying_price_at_buy': current_price_opt,
+                            'strike': float(strike_opt),
+                            'days_to_expiry': int(t_opt_days),
+                            'premium': float(price_opt),
+                            'qty': int(qty_to_buy),
+                            'multiplier': int(multiplier),
+                            'underlying_price_at_buy': float(current_price_opt),
                             'buy_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         }
                         pf_opt['history'].append({
@@ -571,9 +571,9 @@ def run_single_mode(ticker, period, interval, initial_capital, optimize_model, u
                             'action': 'BUY OPTION',
                             'ticker': ticker,
                             'contract': f"CALL Strike {strike_opt}",
-                            'qty': qty_to_buy,
-                            'premium_paid': price_opt,
-                            'total_cost': total_premium
+                            'qty': int(qty_to_buy),
+                            'premium_paid': float(price_opt),
+                            'total_cost': float(total_premium)
                         })
                         save_options_portfolio(pf_opt)
                         st.success(f"{qty_to_buy} contrats CALL achetés virtuellement ! Retrouvez-les dans 'Paper Trading (Options)'.")
@@ -608,7 +608,7 @@ def run_single_mode(ticker, period, interval, initial_capital, optimize_model, u
                 qty_to_buy = max(1, qty_to_buy) # Au moins 1 contrat
                 total_premium = qty_to_buy * cost_per_contract
                 
-                if st.button(f"🔴 Acheter {qty_to_buy} Contrats PUT (Paper Trading Options)"):
+                if st.button(f"🔴 Acheter {qty_to_buy} Contrats PUT (Paper Trading Options)", key=f"exec_opt_put_{ticker}"):
                     pf_opt = load_options_portfolio()
                     if not isinstance(pf_opt.get('positions'), dict):
                         pf_opt['positions'] = {}
@@ -620,12 +620,12 @@ def run_single_mode(ticker, period, interval, initial_capital, optimize_model, u
                         pf_opt['positions'][contract_id] = {
                             'ticker': ticker,
                             'type': 'put',
-                            'strike': strike_opt,
-                            'days_to_expiry': t_opt_days,
-                            'premium': price_opt,
-                            'qty': qty_to_buy,
-                            'multiplier': multiplier,
-                            'underlying_price_at_buy': current_price_opt,
+                            'strike': float(strike_opt),
+                            'days_to_expiry': int(t_opt_days),
+                            'premium': float(price_opt),
+                            'qty': int(qty_to_buy),
+                            'multiplier': int(multiplier),
+                            'underlying_price_at_buy': float(current_price_opt),
                             'buy_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         }
                         pf_opt['history'].append({
@@ -633,9 +633,9 @@ def run_single_mode(ticker, period, interval, initial_capital, optimize_model, u
                             'action': 'BUY OPTION',
                             'ticker': ticker,
                             'contract': f"PUT Strike {strike_opt}",
-                            'qty': qty_to_buy,
-                            'premium_paid': price_opt,
-                            'total_cost': total_premium
+                            'qty': int(qty_to_buy),
+                            'premium_paid': float(price_opt),
+                            'total_cost': float(total_premium)
                         })
                         save_options_portfolio(pf_opt)
                         st.success(f"{qty_to_buy} contrats PUT achetés virtuellement ! Retrouvez-les dans 'Paper Trading (Options)'.")
@@ -926,7 +926,8 @@ def run_portfolio_mode(tickers, period, interval, initial_capital, optimize_mode
                                     st.error("Liquidités insuffisantes !")
                                 else:
                                     try:
-                                        current_price = yf.download(t, period="1d", progress=False)['Close'].iloc[-1]
+                                        df_last = yf.download(t, period="5d", progress=False)
+                                        current_price = df_last['Close'].dropna().iloc[-1]
                                         if isinstance(current_price, pd.Series):
                                             current_price = current_price.iloc[0]
                                         exec_price = float(current_price) * 1.001
@@ -1184,17 +1185,21 @@ def page_paper_trading():
         pos_data = []
         for t in tickers_list:
             try:
-                current_price = yf.download(t, period="1d", progress=False)['Close'].iloc[-1]
+                df_p = yf.download(t, period="5d", progress=False)
+                current_price = df_p['Close'].dropna().iloc[-1]
                 if isinstance(current_price, pd.Series):
                     current_price = current_price.iloc[0]
-            except:
-                current_price = pf['positions'][t]['avg_price'] # fallback
+                current_price = float(current_price)
+                if pd.isna(current_price) or current_price <= 0:
+                    current_price = float(pf['positions'][t]['avg_price'])
+            except Exception:
+                current_price = float(pf['positions'][t]['avg_price']) # fallback
             
             qty = pf['positions'][t]['qty']
             avg_price = pf['positions'][t]['avg_price']
             value = qty * current_price
             pnl = value - (qty * avg_price)
-            pnl_pct = (pnl / (qty * avg_price)) * 100
+            pnl_pct = (pnl / (qty * avg_price)) * 100 if (qty * avg_price) > 0 else 0.0
             
             total_positions_value += value
             
@@ -1254,8 +1259,8 @@ def page_paper_trading():
     else:
         st.write("Aucun historique pour le moment.")
         
-    if st.button("⚠️ Réinitialiser le compte (Remise à 100 000 $)"):
-        save_portfolio({"cash": 100000.0, "positions": {}, "history": []})
+    if st.button("⚠️ Réinitialiser le compte (Remise à 100 000 $)", key="btn_reset_equity_portfolio"):
+        reset_portfolio()
         st.success("Compte réinitialisé.")
         st.rerun()
 
@@ -1288,10 +1293,13 @@ def page_options_paper_trading():
             # Recalculate price today using Black Scholes
             try:
                 df = yf.download(t, period="1y", progress=False)
-                current_price = df['Close'].iloc[-1].item() if isinstance(df['Close'].iloc[-1], pd.Series) else df['Close'].iloc[-1]
+                close_s = df['Close'].dropna()
+                current_price = close_s.iloc[-1].item() if isinstance(close_s.iloc[-1], pd.Series) else float(close_s.iloc[-1])
+                if pd.isna(current_price) or current_price <= 0:
+                    current_price = float(data['underlying_price_at_buy'])
                 sigma = get_implied_volatility(t, current_price)
-            except:
-                current_price = data['underlying_price_at_buy']
+            except Exception:
+                current_price = float(data['underlying_price_at_buy'])
                 sigma = 0.20
                 
             T = T_days / 365.0
@@ -1444,8 +1452,8 @@ def page_options_paper_trading():
     else:
         st.write("Aucun historique pour le moment.")
         
-    if st.button("⚠️ Réinitialiser le compte d'Options"):
-        save_options_portfolio({"cash": 100000.0, "positions": {}, "history": []})
+    if st.button("⚠️ Réinitialiser le compte d'Options", key="btn_reset_options_portfolio"):
+        reset_options_portfolio()
         st.success("Compte d'Options réinitialisé.")
         st.rerun()
 
@@ -1602,7 +1610,7 @@ def page_options_pricing(tickers):
     cout_total = qty_options * price * multiplier
     st.info(f"💰 **Total débité de votre compte virtuel :** {qty_options} contrats × {price*multiplier:.2f} $ = **{cout_total:.2f} $**")
     
-    if st.button("✅ Acheter ce contrat (Paper Trading)", use_container_width=True):
+    if st.button("✅ Acheter ce contrat (Paper Trading)", use_container_width=True, key=f"buy_opt_pricing_{ticker}"):
         pf_opt = load_options_portfolio()
         if not isinstance(pf_opt.get('positions'), dict):
             pf_opt['positions'] = {}
@@ -1614,12 +1622,12 @@ def page_options_pricing(tickers):
             pf_opt['positions'][contract_id] = {
                 'ticker': ticker,
                 'type': opt_type.lower(),
-                'strike': K,
-                'days_to_expiry': T_days,
-                'premium': price,
-                'qty': qty_options,
-                'multiplier': multiplier,
-                'underlying_price_at_buy': S_input,
+                'strike': float(K),
+                'days_to_expiry': int(T_days),
+                'premium': float(price),
+                'qty': int(qty_options),
+                'multiplier': int(multiplier),
+                'underlying_price_at_buy': float(S_input),
                 'buy_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
             pf_opt['history'].append({
@@ -1627,9 +1635,9 @@ def page_options_pricing(tickers):
                 'action': 'BUY OPTION',
                 'ticker': ticker,
                 'contract': f"{opt_type.upper()} Strike {K}",
-                'qty': qty_options,
-                'premium_paid': price,
-                'total_cost': cout_total
+                'qty': int(qty_options),
+                'premium_paid': float(price),
+                'total_cost': float(cout_total)
             })
             save_options_portfolio(pf_opt)
             st.success(f"Contrat acheté avec succès ! Retrouvez-le dans l'onglet 'Paper Trading (Options)'.")
@@ -2230,6 +2238,11 @@ def page_options_backtester(tickers):
 
 # --- FONCTION PRINCIPALE ---
 def main():
+    if "portfolios_synced" not in st.session_state:
+        load_portfolio()
+        load_options_portfolio()
+        st.session_state["portfolios_synced"] = True
+
     st.sidebar.title("🧭 Menu Principal")
     menu = st.sidebar.radio("Sélectionnez un module :", [
         "📈 Terminal de Trading",

@@ -51,80 +51,276 @@ except ImportError:
     HAS_OPTUNA = False
 
 
+import time
+
 # =============================================================================
-# 1. GESTION DES CHEMINS & PERSISTANCE DU PORTEFEUILLE
+# 1. GESTION DES CHEMINS & PERSISTANCE DU PORTEFEUILLE (MULTI-EMPLACEMENTS)
 # =============================================================================
 
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 PORTFOLIO_FILE = "portfolio.json"
 OPTIONS_PORTFOLIO_FILE = "options_portfolio.json"
 
 
+def _get_persistent_paths(filename):
+    """
+    Retourne la liste ordonnée des emplacements de sauvegarde persistants
+    pour garantir la conservation des investissements après relance ou mise à jour
+    (dossier utilisateur ~/.xgboost_trader, dossier workspace parent, volume data/, et racine du projet).
+    """
+    paths = []
+    # 1. Variable d'environnement explicite (si définie sur serveur/cloud)
+    env_dir = os.environ.get("XGBOOST_PORTFOLIO_DIR", "").strip()
+    if env_dir:
+        paths.append(os.path.join(os.path.abspath(env_dir), filename))
+
+    # 2. Dossier persistant dans le profil utilisateur (survit à toute mise à jour ou changement de dossier)
+    try:
+        user_home = os.path.expanduser("~")
+        if user_home and user_home != "~":
+            paths.append(os.path.join(user_home, ".xgboost_trader", filename))
+    except Exception:
+        pass
+
+    # 3. Dossier persistant dans le répertoire parent du projet (survit aux nouvelles releases sur Google Drive / disque)
+    try:
+        parent_dir = os.path.dirname(PROJECT_DIR)
+        if parent_dir and parent_dir != PROJECT_DIR and os.path.dirname(parent_dir) != parent_dir:
+            paths.append(os.path.join(parent_dir, ".xgboost_trader_data", filename))
+    except Exception:
+        pass
+
+    # 4. Volume de données local / Docker (/app/data ou <project>/data)
+    paths.append(os.path.join(PROJECT_DIR, "data", filename))
+
+    # 5. Racine du projet (chemin absolu indépendant du répertoire courant CWD)
+    paths.append(os.path.join(PROJECT_DIR, filename))
+
+    # 6. Répertoire de travail courant (si différent de PROJECT_DIR)
+    cwd_path = os.path.abspath(filename)
+    if cwd_path not in [os.path.abspath(p) for p in paths]:
+        paths.append(cwd_path)
+
+    # Déduplication tout en préservant l'ordre
+    unique_paths = []
+    seen = set()
+    for p in paths:
+        norm_p = os.path.normcase(os.path.abspath(p))
+        if norm_p not in seen:
+            seen.add(norm_p)
+            unique_paths.append(os.path.abspath(p))
+    return unique_paths
+
+
+def _is_default_portfolio_path(filepath, default_filename):
+    """Vérifie si le chemin demandé correspond au portefeuille principal (et non à un fichier de test isolé)."""
+    if filepath is None or filepath == default_filename:
+        return True
+    abs_fp = os.path.normcase(os.path.abspath(filepath))
+    for p in _get_persistent_paths(default_filename):
+        if abs_fp == os.path.normcase(os.path.abspath(p)):
+            return True
+    return False
+
+
+def _normalize_portfolio_dict(data):
+    """Garantit l'intégrité structurelle d'un dictionnaire de portefeuille."""
+    if not isinstance(data, dict):
+        return {"cash": 100000.0, "positions": {}, "history": []}
+    normalized = dict(data)
+    if not isinstance(normalized.get("positions"), dict):
+        normalized["positions"] = {}
+    if not isinstance(normalized.get("history"), list):
+        normalized["history"] = []
+    if "cash" not in normalized or not isinstance(normalized["cash"], (int, float)) or np.isnan(normalized["cash"]):
+        normalized["cash"] = 100000.0
+    else:
+        normalized["cash"] = float(normalized["cash"])
+    return normalized
+
+
+def _is_empty_reset_state(data):
+    """Détermine si un portefeuille correspond à un état vierge (100 000 $, 0 position, 0 historique)."""
+    if not isinstance(data, dict):
+        return True
+    positions = data.get("positions")
+    history = data.get("history")
+    cash = data.get("cash", 100000.0)
+    has_pos = isinstance(positions, dict) and len(positions) > 0
+    has_hist = isinstance(history, list) and len(history) > 0
+    cash_changed = isinstance(cash, (int, float)) and abs(float(cash) - 100000.0) > 0.01
+    return not (has_pos or has_hist or cash_changed)
+
+
+def _read_single_portfolio_file(filepath):
+    """Lit et valide un fichier JSON de portefeuille s'il existe."""
+    if not filepath or not os.path.exists(filepath):
+        return None
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        if isinstance(raw, dict):
+            return _normalize_portfolio_dict(raw)
+    except Exception as e:
+        print(f"Erreur de chargement {filepath}: {e}")
+    return None
+
+
+def _write_single_portfolio_file(portfolio, filepath):
+    """Écriture atomique sécurisée d'un fichier JSON de portefeuille."""
+    try:
+        parent = os.path.dirname(os.path.abspath(filepath))
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        temp_file = f"{filepath}.{os.getpid()}.tmp"
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(portfolio, f, indent=4)
+        os.replace(temp_file, filepath)
+        return True
+    except Exception:
+        try:
+            if 'temp_file' in locals() and os.path.exists(temp_file):
+                os.remove(temp_file)
+        except Exception:
+            pass
+        return False
+
+
+def _load_best_persistent_portfolio(default_filename):
+    """
+    Charge la version la plus récente et la plus complète du portefeuille
+    parmi tous les emplacements persistants, et synchronise automatiquement
+    tous les emplacements pour survivre aux relances et mises à jour.
+    """
+    candidates = []
+    paths = _get_persistent_paths(default_filename)
+    for idx, p in enumerate(paths):
+        data = _read_single_portfolio_file(p)
+        if data is not None:
+            try:
+                mtime = os.path.getmtime(p)
+            except Exception:
+                mtime = 0.0
+            updated_at = float(data.get("_updated_at", 0.0)) if isinstance(data.get("_updated_at"), (int, float)) else 0.0
+            is_empty = _is_empty_reset_state(data)
+            pos_count = len(data.get("positions", {}))
+            hist_count = len(data.get("history", []))
+            
+            # Priorité :
+            # Tier 2 : Fichier horodaté par une action utilisateur (_updated_at > 0) ET non vierge (ou réinitialisé explicitement)
+            # Tier 1 : Fichier existant contenant des positions ou de l'historique (migration sans perte)
+            # Tier 0 : Fichier vierge réinitialisé explicitement
+            # Tier -1 : Fichier template vierge non initialisé (ex: écrasé par une archive de mise à jour)
+            if updated_at > 0 and not is_empty:
+                tier = 3
+            elif not is_empty:
+                tier = 2
+            elif updated_at > 0 and data.get("_last_action") == "RESET":
+                tier = 1
+            else:
+                tier = -1
+
+            # Si un fichier réinitialisé explicitement (tier 1) est plus récent que tous les fichiers avec _updated_at (tier 3)
+            # on utilise directement updated_at pour départager les actions horodatées
+            if updated_at > 0:
+                score = (1, updated_at, pos_count, hist_count, mtime, -idx)
+            elif not is_empty:
+                score = (0, mtime, pos_count, hist_count, mtime, -idx)
+            else:
+                score = (-1, 0.0, 0, 0, mtime, -idx)
+
+            candidates.append((score, data, p))
+
+    if not candidates:
+        return {"cash": 100000.0, "positions": {}, "history": []}
+
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    best_data = candidates[0][1]
+
+    # Synchroniser tous les emplacements persistants avec le meilleur état trouvé
+    if not _is_empty_reset_state(best_data) or best_data.get("_updated_at"):
+        if "_updated_at" not in best_data:
+            best_data["_updated_at"] = time.time()
+        for p in paths:
+            _write_single_portfolio_file(best_data, p)
+
+    return best_data
+
+
+def _save_persistent_portfolio(portfolio, filepath, default_filename, allow_reset=False):
+    """
+    Sauvegarde atomique du portefeuille.
+    Protection stricte : refuse d'écraser un portefeuille contenant des investissements
+    par un compte vierge à 100 000 $ sauf si allow_reset=True (bouton de réinitialisation).
+    """
+    pf = _normalize_portfolio_dict(portfolio)
+
+    if not _is_default_portfolio_path(filepath, default_filename):
+        if not allow_reset and _is_empty_reset_state(pf):
+            existing = _read_single_portfolio_file(filepath)
+            if existing is not None and not _is_empty_reset_state(existing):
+                return existing
+        _write_single_portfolio_file(pf, filepath)
+        return pf
+
+    if not allow_reset and _is_empty_reset_state(pf):
+        existing_best = _load_best_persistent_portfolio(default_filename)
+        if not _is_empty_reset_state(existing_best):
+            return existing_best
+
+    pf["_updated_at"] = time.time()
+    if allow_reset and _is_empty_reset_state(pf):
+        pf["_last_action"] = "RESET"
+    else:
+        pf["_last_action"] = "UPDATE"
+
+    for p in _get_persistent_paths(default_filename):
+        _write_single_portfolio_file(pf, p)
+    return pf
+
+
 def get_portfolio_path():
-    return PORTFOLIO_FILE
+    return os.path.join(PROJECT_DIR, PORTFOLIO_FILE)
 
 
 def load_portfolio(filepath=PORTFOLIO_FILE):
-    """Charge le portefeuille virtuel d'actions."""
-    if os.path.exists(filepath):
-        try:
-            with open(filepath, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, dict):
-                    if not isinstance(data.get("positions"), dict):
-                        data["positions"] = {}
-                    if not isinstance(data.get("history"), list):
-                        data["history"] = []
-                    if "cash" not in data or not isinstance(data["cash"], (int, float)):
-                        data["cash"] = 100000.0
-                    return data
-        except Exception as e:
-            print(f"Erreur de chargement {filepath}: {e}")
-    return {"cash": 100000.0, "positions": {}, "history": []}
+    """Charge le portefeuille virtuel d'actions avec persistance multi-emplacements."""
+    if not _is_default_portfolio_path(filepath, PORTFOLIO_FILE):
+        data = _read_single_portfolio_file(filepath)
+        return data if data is not None else {"cash": 100000.0, "positions": {}, "history": []}
+    return _load_best_persistent_portfolio(PORTFOLIO_FILE)
 
 
-def save_portfolio(portfolio, filepath=PORTFOLIO_FILE):
-    """Sauvegarde atomique du portefeuille d'actions."""
-    temp_file = f"{filepath}.tmp"
-    with open(temp_file, "w", encoding="utf-8") as f:
-        json.dump(portfolio, f, indent=4)
-    if os.path.exists(filepath):
-        os.replace(temp_file, filepath)
-    else:
-        os.rename(temp_file, filepath)
+def save_portfolio(portfolio, filepath=PORTFOLIO_FILE, allow_reset=False):
+    """Sauvegarde atomique du portefeuille d'actions sur tous les emplacements persistants."""
+    return _save_persistent_portfolio(portfolio, filepath, PORTFOLIO_FILE, allow_reset=allow_reset)
+
+
+def reset_portfolio(filepath=PORTFOLIO_FILE):
+    """Réinitialise explicitement le compte Paper Trading (Virtuel) à 100 000 $."""
+    return save_portfolio({"cash": 100000.0, "positions": {}, "history": []}, filepath=filepath, allow_reset=True)
 
 
 def get_options_portfolio_path():
-    return OPTIONS_PORTFOLIO_FILE
+    return os.path.join(PROJECT_DIR, OPTIONS_PORTFOLIO_FILE)
 
 
 def load_options_portfolio(filepath=OPTIONS_PORTFOLIO_FILE):
-    """Charge le portefeuille virtuel d'options."""
-    if os.path.exists(filepath):
-        try:
-            with open(filepath, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, dict):
-                    if not isinstance(data.get("positions"), dict):
-                        data["positions"] = {}
-                    if not isinstance(data.get("history"), list):
-                        data["history"] = []
-                    if "cash" not in data or not isinstance(data["cash"], (int, float)):
-                        data["cash"] = 100000.0
-                    return data
-        except Exception as e:
-            print(f"Erreur de chargement {filepath}: {e}")
-    return {"cash": 100000.0, "positions": {}, "history": []}
+    """Charge le portefeuille virtuel d'options avec persistance multi-emplacements."""
+    if not _is_default_portfolio_path(filepath, OPTIONS_PORTFOLIO_FILE):
+        data = _read_single_portfolio_file(filepath)
+        return data if data is not None else {"cash": 100000.0, "positions": {}, "history": []}
+    return _load_best_persistent_portfolio(OPTIONS_PORTFOLIO_FILE)
 
 
-def save_options_portfolio(portfolio, filepath=OPTIONS_PORTFOLIO_FILE):
-    """Sauvegarde atomique du portefeuille d'options."""
-    temp_file = f"{filepath}.tmp"
-    with open(temp_file, "w", encoding="utf-8") as f:
-        json.dump(portfolio, f, indent=4)
-    if os.path.exists(filepath):
-        os.replace(temp_file, filepath)
-    else:
-        os.rename(temp_file, filepath)
+def save_options_portfolio(portfolio, filepath=OPTIONS_PORTFOLIO_FILE, allow_reset=False):
+    """Sauvegarde atomique du portefeuille d'options sur tous les emplacements persistants."""
+    return _save_persistent_portfolio(portfolio, filepath, OPTIONS_PORTFOLIO_FILE, allow_reset=allow_reset)
+
+
+def reset_options_portfolio(filepath=OPTIONS_PORTFOLIO_FILE):
+    """Réinitialise explicitement le compte Paper Trading (Options) à 100 000 $."""
+    return save_options_portfolio({"cash": 100000.0, "positions": {}, "history": []}, filepath=filepath, allow_reset=True)
 
 
 # =============================================================================
@@ -930,11 +1126,7 @@ class MLTrader:
             if wfa_end_date is None:
                 wfa_end_date = last_ts.date()
             if wfa_start_date is None:
-                computed_start = (pd.Timestamp(wfa_end_date) - train_window).date()
-                min_start = (first_ts + train_window).date()
-                wfa_start_date = max(min_start, computed_start)
-                if wfa_start_date >= wfa_end_date:
-                    wfa_start_date = (first_ts + pd.DateOffset(months=6)).date()
+                wfa_start_date = (first_ts + train_window).date()
                 
             current_date = pd.to_datetime(wfa_start_date)
             if current_date.tzinfo is None and data.index.tzinfo is not None:

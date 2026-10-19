@@ -25,7 +25,8 @@ from quant_core import (
     add_features, MLTrader, black_scholes, find_strike_for_delta,
     get_black_litterman_weights, execute_equity_trade, execute_option_trade,
     convert_google_to_yahoo_ticker, get_option_multiplier_and_legislation,
-    load_portfolio, save_portfolio, load_options_portfolio, save_options_portfolio,
+    load_portfolio, save_portfolio, reset_portfolio,
+    load_options_portfolio, save_options_portfolio, reset_options_portfolio,
     evaluate_multi_regime_triggers
 )
 
@@ -338,8 +339,75 @@ class TestQuantCore(unittest.TestCase):
         with self.assertRaises(ValueError):
             trader.train(df_feat, optimize=False, use_wfa=True, wfa_train_window="5Y", wfa_step="6M")
 
+    def test_16_equity_portfolio_persistence_and_reset_protection(self):
+        """Vérifie la mémorisation des actions et la protection contre toute réinitialisation non autorisée."""
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as tf:
+            temp_path = tf.name
+        try:
+            pf = {"cash": 100000.0, "positions": {}, "history": []}
+            execute_equity_trade(pf, "NVDA", 15, "BUY", 120.0, current_atr=3.0)
+            save_portfolio(pf, filepath=temp_path)
+
+            # 1. Vérifier la persistance après rechargement
+            reloaded = load_portfolio(filepath=temp_path)
+            self.assertIn("NVDA", reloaded["positions"])
+            self.assertEqual(reloaded["positions"]["NVDA"]["qty"], 15)
+
+            # 2. Tentative d'écrasement accidentel (sans allow_reset=True) -> DOIT être bloquée
+            save_portfolio({"cash": 100000.0, "positions": {}, "history": []}, filepath=temp_path, allow_reset=False)
+            protected = load_portfolio(filepath=temp_path)
+            self.assertIn("NVDA", protected["positions"], "Le portefeuille d'actions ne doit JAMAIS être réinitialisé sans le bouton dédié.")
+            self.assertEqual(protected["positions"]["NVDA"]["qty"], 15)
+
+            # 3. Réinitialisation explicite via reset_portfolio (bouton Réinitialiser le compte) -> DOIT réussir
+            reset_portfolio(filepath=temp_path)
+            after_reset = load_portfolio(filepath=temp_path)
+            self.assertEqual(after_reset["cash"], 100000.0)
+            self.assertEqual(len(after_reset["positions"]), 0)
+            self.assertEqual(len(after_reset["history"]), 0)
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+    def test_17_options_portfolio_persistence_and_reset_protection(self):
+        """Vérifie la mémorisation des options et la protection contre toute réinitialisation non autorisée."""
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as tf:
+            temp_path = tf.name
+        try:
+            pf_opt = {"cash": 100000.0, "positions": {}, "history": []}
+            success, cid, _ = execute_option_trade(
+                pf_opt, ticker="AAPL", opt_type="call", strike=200.0,
+                days_to_expiry=30, qty=3, premium=4.5, underlying_price=198.0, action="BUY"
+            )
+            self.assertTrue(success)
+            save_options_portfolio(pf_opt, filepath=temp_path)
+
+            # 1. Vérifier la persistance après rechargement
+            reloaded = load_options_portfolio(filepath=temp_path)
+            self.assertIn(cid, reloaded["positions"])
+            self.assertEqual(reloaded["positions"][cid]["qty"], 3)
+
+            # 2. Tentative d'écrasement accidentel (sans allow_reset=True) -> DOIT être bloquée
+            save_options_portfolio({"cash": 100000.0, "positions": {}, "history": []}, filepath=temp_path, allow_reset=False)
+            protected = load_options_portfolio(filepath=temp_path)
+            self.assertIn(cid, protected["positions"], "Le portefeuille d'options ne doit JAMAIS être réinitialisé sans le bouton dédié.")
+            self.assertEqual(protected["positions"][cid]["qty"], 3)
+
+            # 3. Réinitialisation explicite via reset_options_portfolio (bouton Réinitialiser le compte d'Options) -> DOIT réussir
+            reset_options_portfolio(filepath=temp_path)
+            after_reset = load_options_portfolio(filepath=temp_path)
+            self.assertEqual(after_reset["cash"], 100000.0)
+            self.assertEqual(len(after_reset["positions"]), 0)
+            self.assertEqual(len(after_reset["history"]), 0)
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

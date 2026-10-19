@@ -27,7 +27,8 @@ RUN (python -m textblob.download_corpora || true) && \
 COPY . .
 
 # Création des dossiers de persistance
-RUN mkdir -p /app/models /app/data
+RUN mkdir -p /app/models /app/data /root/.xgboost_trader
+VOLUME ["/app/data", "/app/models", "/root/.xgboost_trader"]
 
 # Exposition des ports (8501 standard et 3000 par défaut Dokploy)
 EXPOSE 8501 3000
