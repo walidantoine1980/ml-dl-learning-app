@@ -1,34 +1,24 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
+__pycache__
+*.pyc
+*.pyo
+*.pyd
 .Python
-
-# Environnements virtuels
 env/
 venv/
 .venv/
-ENV/
-build/
-dist/
-*.egg-info/
-
-# Persistance des données et modèles
-models/
-data/
-*.pkl
-*.joblib
-portfolio.json
-options_portfolio.json
-bot_config.json
-.env
-
-# Système & IDE
-.vscode/
-.idea/
-.DS_Store
+.git
+.gitignore
+.dockerignore
 *.swp
-*.log
 *.bak
 *.tmp
+.DS_Store
+Thumbs.db
+.vscode
+.idea
+*.log
+tests/__pycache__
+data/
+models/
+options_portfolio.json
+bot_config.json

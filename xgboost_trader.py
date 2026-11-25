@@ -2341,6 +2341,31 @@ def page_options_backtester(tickers):
             except Exception as e:
                 st.error(f"Erreur durant la simulation : {e}")
 
+@st.cache_data(ttl=15, show_spinner=False)
+def _fetch_live_price_fast(symbol):
+    """Récupère le cours en temps réel (cache 15s) pour la supervision live."""
+    try:
+        tk = yf.Ticker(symbol)
+        fi = getattr(tk, "fast_info", None)
+        if fi is not None and hasattr(fi, "last_price"):
+            lp = fi.last_price
+            if lp is not None and float(lp) > 0:
+                return float(lp)
+        hist = tk.history(period="2d", interval="1m")
+        if hist is not None and not hist.empty and "Close" in hist.columns:
+            val = float(hist["Close"].dropna().iloc[-1])
+            if val > 0:
+                return val
+        hist_d = tk.history(period="5d")
+        if hist_d is not None and not hist_d.empty and "Close" in hist_d.columns:
+            val = float(hist_d["Close"].dropna().iloc[-1])
+            if val > 0:
+                return val
+    except Exception:
+        return None
+    return None
+
+
 # =============================================================================
 # MODULE : MODE TRADING AUTOMATIQUE EN BOUCLE (AUTOPILOT)
 # =============================================================================
@@ -2860,43 +2885,167 @@ def page_auto_trading(sidebar_tickers=None, sidebar_csv_files=None):
     pf = load_portfolio()
 
     st.divider()
-    st.subheader("📡 Supervision en Temps Réel")
+    live_ts = datetime.now().strftime("%H:%M:%S")
+    st.markdown(
+        f"""
+        <style>
+        @keyframes pulse-live {{
+            0% {{ box-shadow: 0 0 0 0 rgba(0, 255, 136, 0.75); }}
+            70% {{ box-shadow: 0 0 0 10px rgba(0, 255, 136, 0); }}
+            100% {{ box-shadow: 0 0 0 0 rgba(0, 255, 136, 0); }}
+        }}
+        .live-badge {{
+            display: inline-flex; align-items: center; gap: 8px;
+            background: rgba(0, 255, 136, 0.12); border: 1px solid #00ff88;
+            color: #00ff88; padding: 3px 10px; border-radius: 999px;
+            font-size: 0.80rem; font-weight: 700; letter-spacing: 0.5px;
+        }}
+        .live-dot {{
+            width: 9px; height: 9px; border-radius: 50%;
+            background: #00ff88; display: inline-block;
+            animation: pulse-live 1.6s infinite;
+        }}
+        </style>
+        <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-bottom:8px;">
+            <h3 style="margin:0;">📡 Supervision en Temps Réel</h3>
+            <span class="live-badge"><span class="live-dot"></span> LIVE • Cotations actualisées à {live_ts}</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    k1, k2, k3, k4, k5, k6 = st.columns(6)
+    # Calcul temps réel des positions ouvertes (Cours Live, PRU, SL, TP, Gain/Perte)
+    positions = pf.get("positions", {})
+    live_pos_rows = []
+    total_positions_value = 0.0
+    total_invested_cost = 0.0
+    total_unrealized_pnl = 0.0
+
+    for sym, p in positions.items():
+        qty = float(p.get("qty", 0.0))
+        if qty <= 0:
+            continue
+        pru = float(p.get("avg_price", 0.0))
+        sl_val = float(p["stop_loss"]) if p.get("stop_loss") else None
+        tp_val = float(p["take_profit"]) if p.get("take_profit") else None
+        live_px = _fetch_live_price_fast(sym)
+        if live_px is None or live_px <= 0:
+            live_px = pru
+
+        pos_val = qty * live_px
+        cost_basis = qty * pru
+        unreal_pnl = pos_val - cost_basis
+        unreal_pct = ((live_px - pru) / pru * 100.0) if pru > 0 else 0.0
+
+        total_positions_value += pos_val
+        total_invested_cost += cost_basis
+        total_unrealized_pnl += unreal_pnl
+
+        dist_sl_pct = ((live_px - sl_val) / live_px * 100.0) if (sl_val and live_px > 0) else None
+        dist_tp_pct = ((tp_val - live_px) / live_px * 100.0) if (tp_val and live_px > 0) else None
+
+        live_pos_rows.append({
+            "Symbole": sym,
+            "Nom": get_company_name_from_yahoo(sym),
+            "Quantité": round(qty, 4),
+            "PRU ($)": round(pru, 2),
+            "Cours Live ($)": round(live_px, 2),
+            "Stop-Loss ($)": round(sl_val, 2) if sl_val is not None else None,
+            "Take-Profit ($)": round(tp_val, 2) if tp_val is not None else None,
+            "Valeur Live ($)": round(pos_val, 2),
+            "Gain/Perte ($)": round(unreal_pnl, 2),
+            "Gain/Perte (%)": round(unreal_pct, 2),
+            "Marge SL (%)": round(dist_sl_pct, 2) if dist_sl_pct is not None else None,
+            "Cible TP (%)": round(dist_tp_pct, 2) if dist_tp_pct is not None else None,
+        })
+
+    # Calcul des gains/pertes réalisés sur les ventes (historique portefeuille)
+    pf_history = pf.get("history", []) or []
+    sell_records = [h for h in pf_history if "SELL" in str(h.get("action", "")).upper()]
+    buy_records = [h for h in pf_history if "BUY" in str(h.get("action", "")).upper()]
+    total_realized_pnl_pf = sum(float(h.get("pnl", 0.0) or 0.0) for h in sell_records)
+    live_equity = float(pf.get("cash", 0.0)) + total_positions_value
+    total_net_pnl = total_realized_pnl_pf + total_unrealized_pnl
+    unreal_total_pct = (total_unrealized_pnl / total_invested_cost * 100.0) if total_invested_cost > 0 else 0.0
+
+    # Bandeau KPI Temps Réel (2 rangées claires)
+    k1, k2, k3, k4 = st.columns(4)
     state_label = "🟢 ACTIF" if (status["is_running"] and not status["is_paused"]) else ("⏸️ PAUSE" if status["is_paused"] else "🔴 ARRÊTÉ")
-    k1.metric("Statut Moteur", state_label)
-    k2.metric("Cycles Boucle", status["cycle_count"])
-    k3.metric("Cash Disponible", f"{pf.get('cash', 0.0):,.2f} $")
-    k4.metric("Équité Estimée", f"{status['current_equity'] or pf.get('cash', 0.0):,.2f} $")
-    k5.metric("PnL Réalisé (Auto)", f"{status['realized_pnl']:+,.2f} $")
-    k6.metric("Achats / Ventes", f"{status['total_buys']} / {status['total_sells']}")
+    k1.metric("Statut Moteur", state_label, delta=f"Cycle #{status['cycle_count']}")
+    k2.metric("Cash Disponible", f"{pf.get('cash', 0.0):,.2f} $")
+    k3.metric("Équité Live Totale", f"{live_equity:,.2f} $", delta=f"{len(live_pos_rows)} position(s)")
+    k4.metric("Ordres (Achats / Ventes)", f"{len(buy_records)} / {len(sell_records)}", delta=f"Session auto: {status['total_buys']}/{status['total_sells']}")
+
+    p1_kpi, p2_kpi, p3_kpi, p4_kpi = st.columns(4)
+    p1_kpi.metric("Gain / Perte Latent (Live)", f"{total_unrealized_pnl:+,.2f} $", delta=f"{unreal_total_pct:+.2f}%")
+    p2_kpi.metric("Gain / Perte Réalisé (Ventes)", f"{total_realized_pnl_pf:+,.2f} $", delta=f"Auto: {status['realized_pnl']:+,.2f} $")
+    p3_kpi.metric("Résultat Total Net (Gains/Pertes)", f"{total_net_pnl:+,.2f} $", delta="Latent + Réalisé", delta_color="normal" if total_net_pnl >= 0 else "inverse")
+    win_sells = sum(1 for h in sell_records if float(h.get("pnl", 0.0) or 0.0) > 0)
+    win_rate_pct = (win_sells / len(sell_records) * 100.0) if sell_records else 0.0
+    p4_kpi.metric("Taux de Ventes Gagnantes", f"{win_rate_pct:.1f}%", delta=f"{win_sells}/{len(sell_records)} ventes")
 
     if status.get("drawdown_halted"):
         st.error(f"🚨 Coupe-circuit Drawdown actif ({status['drawdown_pct']:.2f}%) : nouveaux achats suspendus.")
     if status.get("last_error"):
         st.warning(f"⚠️ Dernière erreur moteur : {status['last_error']}")
 
-    tab_pos, tab_rank, tab_trades, tab_logs = st.tabs([
-        "📊 Positions & Équité",
+    tab_pos, tab_anim, tab_rank, tab_trades, tab_logs = st.tabs([
+        "📊 Positions Live (Cours, PRU, SL, TP, PnL)",
+        "🎬 Animation Graphique Live & Gains/Pertes",
         "🏆 Classement IA (Dernier Scan)",
-        "📜 Historique des Trades Auto",
+        "📜 Historique Achats & Ventes",
         "🖥️ Journal d'Exécution (Logs)",
     ])
 
     with tab_pos:
-        positions = pf.get("positions", {})
-        if positions:
-            pos_rows = []
-            for sym, p in positions.items():
-                pos_rows.append({
-                    "Symbole": sym,
-                    "Nom": get_company_name_from_yahoo(sym),
-                    "Quantité": round(float(p.get("qty", 0)), 4),
-                    "PRU ($)": round(float(p.get("avg_price", 0)), 2),
-                    "Stop-Loss ($)": round(float(p["stop_loss"]), 2) if p.get("stop_loss") else "-",
-                    "Take-Profit ($)": round(float(p["take_profit"]), 2) if p.get("take_profit") else "-",
-                })
-            st.dataframe(pd.DataFrame(pos_rows), use_container_width=True, hide_index=True)
+        if live_pos_rows:
+            df_live = pd.DataFrame(live_pos_rows)
+
+            def _color_pnl(val):
+                try:
+                    v = float(val)
+                    if v > 0:
+                        return "color: #00ff88; font-weight: 700;"
+                    if v < 0:
+                        return "color: #ff4b4b; font-weight: 700;"
+                except Exception:
+                    pass
+                return ""
+
+            styled_live = df_live.style.map(_color_pnl, subset=["Gain/Perte ($)", "Gain/Perte (%)"])
+            st.dataframe(styled_live, use_container_width=True, hide_index=True)
+
+            # Graphique comparatif Cours Live vs PRU / Stop-Loss / Take-Profit
+            fig_levels = go.Figure()
+            syms_lbl = [r["Symbole"] for r in live_pos_rows]
+            fig_levels.add_trace(go.Bar(
+                name="PRU ($)", x=syms_lbl, y=[r["PRU ($)"] for r in live_pos_rows],
+                marker_color="rgba(148, 163, 184, 0.55)",
+            ))
+            fig_levels.add_trace(go.Bar(
+                name="Cours Live ($)", x=syms_lbl, y=[r["Cours Live ($)"] for r in live_pos_rows],
+                marker_color=["#00ff88" if r["Gain/Perte ($)"] >= 0 else "#ff4b4b" for r in live_pos_rows],
+                text=[f"{r['Cours Live ($)']:.2f} $ ({r['Gain/Perte (%)']:+.1f}%)" for r in live_pos_rows],
+                textposition="outside",
+            ))
+            sl_vals = [r["Stop-Loss ($)"] for r in live_pos_rows]
+            tp_vals = [r["Take-Profit ($)"] for r in live_pos_rows]
+            if any(v is not None for v in sl_vals):
+                fig_levels.add_trace(go.Scatter(
+                    name="🛑 Stop-Loss ($)", x=syms_lbl, y=sl_vals,
+                    mode="markers", marker=dict(symbol="triangle-down", size=14, color="#ff4b4b", line=dict(color="white", width=1)),
+                ))
+            if any(v is not None for v in tp_vals):
+                fig_levels.add_trace(go.Scatter(
+                    name="🎯 Take-Profit ($)", x=syms_lbl, y=tp_vals,
+                    mode="markers", marker=dict(symbol="triangle-up", size=14, color="#00ff88", line=dict(color="white", width=1)),
+                ))
+            fig_levels.update_layout(
+                title="Cours Temps Réel vs PRU, Stop-Loss & Take-Profit",
+                barmode="group", template="plotly_dark", height=380,
+                yaxis_title="Prix ($)", legend=dict(orientation="h", y=1.12),
+            )
+            st.plotly_chart(fig_levels, use_container_width=True)
         else:
             st.info("Aucune position ouverte actuellement dans le portefeuille.")
 
@@ -2906,8 +3055,174 @@ def page_auto_trading(sidebar_tickers=None, sidebar_csv_files=None):
             fig_eq = go.Figure()
             fig_eq.add_trace(go.Scatter(x=df_eq["time"], y=df_eq["equity"], mode="lines+markers", name="Équité Totale ($)", line=dict(color="#00ff88", width=2)))
             fig_eq.add_trace(go.Scatter(x=df_eq["time"], y=df_eq["cash"], mode="lines", name="Cash ($)", line=dict(color="#00d2ff", dash="dot")))
-            fig_eq.update_layout(title="Courbe d'Équité de la Session Automatique", template="plotly_dark", height=350)
+            fig_eq.update_layout(title="Courbe d'Équité de la Session Automatique", template="plotly_dark", height=330)
             st.plotly_chart(fig_eq, use_container_width=True)
+
+    with tab_anim:
+        st.markdown("#### 🎬 Radar Animé : Trajectoire du Cours Live entre Stop-Loss, PRU et Take-Profit")
+        if live_pos_rows:
+            # Animation Plotly : fait glisser chaque action du PRU (0%) vers son Cours Live actuel sur l'échelle [SL -> TP]
+            n_frames = 12
+            radar_syms = [r["Symbole"] for r in live_pos_rows]
+            base_sl = []
+            base_tp = []
+            base_pru = []
+            base_live = []
+            for r in live_pos_rows:
+                pru_v = r["PRU ($)"]
+                live_v = r["Cours Live ($)"]
+                sl_v = r["Stop-Loss ($)"] if r["Stop-Loss ($)"] is not None else round(pru_v * 0.95, 2)
+                tp_v = r["Take-Profit ($)"] if r["Take-Profit ($)"] is not None else round(pru_v * 1.10, 2)
+                base_pru.append(pru_v)
+                base_live.append(live_v)
+                base_sl.append(sl_v)
+                base_tp.append(tp_v)
+
+            # Normalisation en % de progression entre SL (0%) et TP (100%) pour comparer toutes les actions sur une même piste animée
+            def _norm_pos(val, sl_v, tp_v):
+                span = max(tp_v - sl_v, 1e-6)
+                return max(-15.0, min(115.0, (val - sl_v) / span * 100.0))
+
+            pru_norm = [_norm_pos(base_pru[i], base_sl[i], base_tp[i]) for i in range(len(live_pos_rows))]
+            live_norm = [_norm_pos(base_live[i], base_sl[i], base_tp[i]) for i in range(len(live_pos_rows))]
+
+            frames_radar = []
+            for step in range(n_frames + 1):
+                alpha = step / n_frames
+                curr_x = [pru_norm[i] + alpha * (live_norm[i] - pru_norm[i]) for i in range(len(live_pos_rows))]
+                curr_px = [base_pru[i] + alpha * (base_live[i] - base_pru[i]) for i in range(len(live_pos_rows))]
+                curr_pnl = [(curr_px[i] - base_pru[i]) * live_pos_rows[i]["Quantité"] for i in range(len(live_pos_rows))]
+                colors = ["#00ff88" if curr_pnl[i] >= 0 else "#ff4b4b" for i in range(len(live_pos_rows))]
+                frames_radar.append(go.Frame(
+                    name=f"t{step}",
+                    data=[
+                        go.Bar(
+                            y=radar_syms, x=curr_x, orientation="h",
+                            marker_color=colors,
+                            text=[f"Live: {curr_px[i]:.2f}$ | PnL: {curr_pnl[i]:+.1f}$" for i in range(len(live_pos_rows))],
+                            textposition="auto",
+                        )
+                    ],
+                ))
+
+            fig_radar = go.Figure(
+                data=[
+                    go.Bar(
+                        name="Cours Live (Progression SL → TP)",
+                        y=radar_syms, x=live_norm, orientation="h",
+                        marker_color=["#00ff88" if r["Gain/Perte ($)"] >= 0 else "#ff4b4b" for r in live_pos_rows],
+                        text=[f"Live: {r['Cours Live ($)']:.2f}$ | PnL: {r['Gain/Perte ($)']:+.1f}$ ({r['Gain/Perte (%)']:+.1f}%)" for r in live_pos_rows],
+                        textposition="auto",
+                    ),
+                    go.Scatter(
+                        name="PRU (Prix d'Entrée)",
+                        y=radar_syms, x=pru_norm, mode="markers",
+                        marker=dict(symbol="diamond", size=13, color="#38bdf8", line=dict(color="white", width=1.5)),
+                    ),
+                ],
+                frames=frames_radar,
+            )
+            fig_radar.add_vline(x=0, line_dash="dash", line_color="#ff4b4b", annotation_text="🛑 STOP-LOSS (0%)")
+            fig_radar.add_vline(x=100, line_dash="dash", line_color="#00ff88", annotation_text="🎯 TAKE-PROFIT (100%)")
+            fig_radar.update_layout(
+                title="Animation : Déplacement du Cours (PRU → Live) entre Stop-Loss et Take-Profit",
+                template="plotly_dark",
+                height=max(300, 75 * len(live_pos_rows) + 140),
+                xaxis=dict(title="Position sur le corridor Stop-Loss (0%) → Take-Profit (100%)", range=[-18, 122]),
+                updatemenus=[{
+                    "type": "buttons", "showactive": False, "x": 0.0, "y": 1.18, "xanchor": "left",
+                    "buttons": [
+                        {"label": "▶️ Animer PRU → Live", "method": "animate", "args": [None, {"frame": {"duration": 90, "redraw": True}, "fromcurrent": False, "transition": {"duration": 50}}]},
+                        {"label": "⏸️ Pause", "method": "animate", "args": [[None], {"frame": {"duration": 0, "redraw": False}, "mode": "immediate"}]},
+                    ],
+                }],
+            )
+            st.plotly_chart(fig_radar, use_container_width=True)
+        else:
+            st.info("Ouvrez au moins une position (ou lancez un cycle automatique) pour visualiser le radar animé SL / PRU / TP.")
+
+        st.markdown("#### 📈 Animation des Gains & Pertes Cumulés (Achats & Ventes)")
+        if sell_records:
+            df_sells = pd.DataFrame(sell_records).copy()
+            df_sells["pnl"] = pd.to_numeric(df_sells.get("pnl", 0.0), errors="coerce").fillna(0.0)
+            df_sells["cum_pnl"] = df_sells["pnl"].cumsum()
+            df_sells["trade_idx"] = [f"#{i+1} {r.get('ticker', '')}" for i, (_, r) in enumerate(df_sells.iterrows())]
+
+            frames_pnl = []
+            for k in range(1, len(df_sells) + 1):
+                sub = df_sells.iloc[:k]
+                frames_pnl.append(go.Frame(
+                    name=f"trade_{k}",
+                    data=[
+                        go.Bar(
+                            x=sub["trade_idx"], y=sub["pnl"],
+                            marker_color=["#00ff88" if v >= 0 else "#ff4b4b" for v in sub["pnl"]],
+                            name="PnL par Vente ($)",
+                        ),
+                        go.Scatter(
+                            x=sub["trade_idx"], y=sub["cum_pnl"],
+                            mode="lines+markers", line=dict(color="#00d2ff", width=3),
+                            name="Gain/Perte Cumulé ($)",
+                        ),
+                    ],
+                ))
+
+            fig_pnl_anim = go.Figure(
+                data=[
+                    go.Bar(
+                        x=df_sells["trade_idx"], y=df_sells["pnl"],
+                        marker_color=["#00ff88" if v >= 0 else "#ff4b4b" for v in df_sells["pnl"]],
+                        name="PnL par Vente ($)",
+                    ),
+                    go.Scatter(
+                        x=df_sells["trade_idx"], y=df_sells["cum_pnl"],
+                        mode="lines+markers", line=dict(color="#00d2ff", width=3),
+                        name="Gain/Perte Cumulé ($)",
+                    ),
+                ],
+                frames=frames_pnl,
+            )
+            fig_pnl_anim.add_hline(y=0, line_dash="dot", line_color="gray")
+            fig_pnl_anim.update_layout(
+                title="Replay Animé des Gains / Pertes Réalisés par Vente & Cumul Total",
+                template="plotly_dark", height=380,
+                yaxis_title="Résultat ($)",
+                updatemenus=[{
+                    "type": "buttons", "showactive": False, "x": 0.0, "y": 1.16, "xanchor": "left",
+                    "buttons": [
+                        {"label": "▶️ Rejouer les Gains/Pertes", "method": "animate", "args": [None, {"frame": {"duration": 350, "redraw": True}, "fromcurrent": False}]},
+                        {"label": "⏸️ Pause", "method": "animate", "args": [[None], {"frame": {"duration": 0, "redraw": False}, "mode": "immediate"}]},
+                    ],
+                }],
+            )
+            st.plotly_chart(fig_pnl_anim, use_container_width=True)
+        else:
+            st.info("Aucune vente clôturée pour le moment : l'animation des gains/pertes réalisés s'affichera dès la première vente.")
+
+        # Bilan consolidé par action (Achats, Ventes, PnL Réalisé, PnL Latent, Total Net)
+        per_ticker = {}
+        for h in pf_history:
+            tk = h.get("ticker", "N/A")
+            rec = per_ticker.setdefault(tk, {"Symbole": tk, "Achats": 0, "Ventes": 0, "PnL Réalisé ($)": 0.0, "PnL Latent ($)": 0.0})
+            act = str(h.get("action", "")).upper()
+            if "BUY" in act:
+                rec["Achats"] += 1
+            elif "SELL" in act:
+                rec["Ventes"] += 1
+                rec["PnL Réalisé ($)"] += float(h.get("pnl", 0.0) or 0.0)
+        for r in live_pos_rows:
+            tk = r["Symbole"]
+            rec = per_ticker.setdefault(tk, {"Symbole": tk, "Achats": 0, "Ventes": 0, "PnL Réalisé ($)": 0.0, "PnL Latent ($)": 0.0})
+            rec["PnL Latent ($)"] = r["Gain/Perte ($)"]
+        if per_ticker:
+            summary_rows = []
+            for rec in per_ticker.values():
+                rec["PnL Réalisé ($)"] = round(rec["PnL Réalisé ($)"], 2)
+                rec["PnL Latent ($)"] = round(rec["PnL Latent ($)"], 2)
+                rec["Résultat Total ($)"] = round(rec["PnL Réalisé ($)"] + rec["PnL Latent ($)"], 2)
+                summary_rows.append(rec)
+            st.markdown("#### 🧾 Bilan Gains / Pertes par Action (Achats + Ventes)")
+            st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
 
     with tab_rank:
         rankings = status.get("last_rankings", [])
@@ -2917,19 +3232,36 @@ def page_auto_trading(sidebar_tickers=None, sidebar_csv_files=None):
             st.info("Aucun scan effectué pour l'instant. Lancez le Mode Automatique ou cliquez sur 'Exécuter 1 Cycle'.")
 
     with tab_trades:
-        events = status.get("trade_events", [])
-        if events:
-            df_ev = pd.DataFrame(events[::-1])
-            st.dataframe(df_ev, use_container_width=True, hide_index=True)
-            st.download_button(
-                "📥 Exporter les Trades Auto (CSV)",
-                data=df_ev.to_csv(index=False).encode("utf-8"),
-                file_name="autopilot_trades.csv",
-                mime="text/csv",
-                key="dl_auto_trades",
-            )
-        else:
-            st.info("Aucun ordre exécuté par le mode automatique pour le moment.")
+        col_t1, col_t2 = st.columns(2)
+        with col_t1:
+            st.markdown("**⚡ Ordres de la Session Automatique**")
+            events = status.get("trade_events", [])
+            if events:
+                df_ev = pd.DataFrame(events[::-1])
+                st.dataframe(df_ev, use_container_width=True, hide_index=True)
+                st.download_button(
+                    "📥 Exporter les Trades Auto (CSV)",
+                    data=df_ev.to_csv(index=False).encode("utf-8"),
+                    file_name="autopilot_trades.csv",
+                    mime="text/csv",
+                    key="dl_auto_trades",
+                )
+            else:
+                st.info("Aucun ordre exécuté par la session automatique en cours.")
+        with col_t2:
+            st.markdown("**📒 Historique Complet Portefeuille (Achats & Ventes)**")
+            if pf_history:
+                df_hist_all = pd.DataFrame(pf_history[::-1])
+                st.dataframe(df_hist_all, use_container_width=True, hide_index=True)
+                st.download_button(
+                    "📥 Exporter Historique Complet (CSV)",
+                    data=df_hist_all.to_csv(index=False).encode("utf-8"),
+                    file_name="portfolio_trades_history.csv",
+                    mime="text/csv",
+                    key="dl_pf_trades_all",
+                )
+            else:
+                st.info("Aucun historique de transaction dans le portefeuille.")
 
     with tab_logs:
         logs = status.get("logs", [])
@@ -2946,12 +3278,15 @@ def page_auto_trading(sidebar_tickers=None, sidebar_csv_files=None):
         else:
             st.info("Journal vide.")
 
-    # Auto-refresh optionnel lorsque le moteur tourne
-    if status["is_running"]:
-        auto_refresh = st.checkbox("🔄 Rafraîchissement automatique du tableau de bord (toutes les 10s)", value=False, key="auto_refresh_dashboard")
-        if auto_refresh:
-            time.sleep(10)
-            st.rerun()
+    # Auto-refresh optionnel pour suivre les cours et animations en temps réel
+    auto_refresh = st.checkbox(
+        "🔄 Rafraîchissement automatique en temps réel (toutes les 15s)",
+        value=False,
+        key="auto_refresh_dashboard",
+    )
+    if auto_refresh:
+        time.sleep(15)
+        st.rerun()
 
 
 # --- IMPORTATEUR DE WATCHLISTS CSV (CONFORMITÉ & TRADUCTION AUTO) ---

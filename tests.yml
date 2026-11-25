@@ -1,0 +1,28 @@
+name: Quant Test Suite
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Syntax & Compilation Check
+        run: |
+          python -m py_compile quant_core.py auto_trader_engine.py academy_core.py tickers_db.py xgboost_trader.py headless_bot.py dual_port_proxy.py
+      - name: Run Test Suite
+        run: |
+          python tests/test_system.py
+          python tests/test_auto_trader.py
