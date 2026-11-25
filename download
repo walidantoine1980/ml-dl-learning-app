@@ -20,5 +20,8 @@ Thumbs.db
 tests/__pycache__
 data/
 models/
+portfolio.json
 options_portfolio.json
 bot_config.json
+auto_trader_config.json
+auto_trader_state.json

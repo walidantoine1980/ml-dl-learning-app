@@ -47,8 +47,27 @@ from quant_core import (
 )
 from tickers_db import parse_and_validate_watchlist_csv
 
-AUTO_TRADER_STATE_FILE = "auto_trader_state.json"
-AUTO_TRADER_CONFIG_FILE = "auto_trader_config.json"
+def _get_persistent_runtime_file(filename: str) -> str:
+    """
+    Résout un chemin persistant pour la configuration et l'état du mode automatique.
+    Priorité : variable d'environnement XGBOOST_PORTFOLIO_DIR (ex: /app/data en Docker),
+    puis dossier local ./data/ (volume persistant Docker), avec création automatique du dossier.
+    """
+    env_dir = os.environ.get("XGBOOST_PORTFOLIO_DIR", "").strip()
+    if env_dir:
+        target_dir = os.path.abspath(env_dir)
+    else:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        target_dir = os.path.join(base_dir, "data")
+    try:
+        os.makedirs(target_dir, exist_ok=True)
+        return os.path.join(target_dir, filename)
+    except Exception:
+        return filename
+
+
+AUTO_TRADER_STATE_FILE = _get_persistent_runtime_file("auto_trader_state.json")
+AUTO_TRADER_CONFIG_FILE = _get_persistent_runtime_file("auto_trader_config.json")
 
 
 # =============================================================================
@@ -198,6 +217,9 @@ class AutoTraderConfig:
 
 def save_auto_trader_config(config: AutoTraderConfig, filepath: str = AUTO_TRADER_CONFIG_FILE) -> None:
     """Sauvegarde atomique de la configuration du mode automatique."""
+    parent = os.path.dirname(os.path.abspath(filepath))
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     tmp_path = f"{filepath}.tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(config.to_dict(), f, indent=2, ensure_ascii=False)
@@ -205,13 +227,17 @@ def save_auto_trader_config(config: AutoTraderConfig, filepath: str = AUTO_TRADE
 
 
 def load_auto_trader_config(filepath: str = AUTO_TRADER_CONFIG_FILE) -> AutoTraderConfig:
-    """Charge la configuration sauvegardée du mode automatique."""
-    if os.path.exists(filepath):
-        try:
-            with open(filepath, "r", encoding="utf-8") as f:
-                return AutoTraderConfig.from_dict(json.load(f))
-        except Exception:
-            pass
+    """Charge la configuration sauvegardée du mode automatique (avec repli racine legacy)."""
+    candidates = [filepath]
+    if filepath == AUTO_TRADER_CONFIG_FILE:
+        candidates.append("auto_trader_config.json")
+    for path in candidates:
+        if path and os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    return AutoTraderConfig.from_dict(json.load(f))
+            except Exception:
+                pass
     return AutoTraderConfig()
 
 
@@ -358,6 +384,9 @@ class AutoTraderEngine:
         if not self._state_file:
             return
         try:
+            parent = os.path.dirname(os.path.abspath(self._state_file))
+            if parent:
+                os.makedirs(parent, exist_ok=True)
             snap = self.get_status()
             tmp_path = f"{self._state_file}.tmp"
             with open(tmp_path, "w", encoding="utf-8") as f:

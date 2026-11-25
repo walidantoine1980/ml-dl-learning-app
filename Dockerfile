@@ -6,6 +6,7 @@ WORKDIR /app
 ENV HF_HOME=/app/.cache
 ENV NLTK_DATA=/usr/share/nltk_data
 ENV PYTHONUNBUFFERED=1
+ENV XGBOOST_PORTFOLIO_DIR=/app/data
 
 # Installation des dépendances système (y compris libgomp1 obligatoire pour LightGBM)
 RUN apt-get update && apt-get install -y \
@@ -25,6 +26,9 @@ RUN (python -m textblob.download_corpora || true) && \
 
 # Copie du code source complet
 COPY . .
+
+# Sécurité : ne jamais embarquer d'ancien état de portefeuille ou config locale dans l'image
+RUN rm -f /app/portfolio.json /app/options_portfolio.json /app/bot_config.json /app/auto_trader_config.json /app/auto_trader_state.json
 
 # Création des dossiers de persistance
 RUN mkdir -p /app/models /app/data /root/.xgboost_trader

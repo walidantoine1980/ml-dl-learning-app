@@ -1,0 +1,23 @@
+services:
+  xgboost-trader:
+    build: .
+    container_name: xgboost-trader-auto
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+      - "3000:3000"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - XGBOOST_PORTFOLIO_DIR=/app/data
+      # Optionnel : décommentez et renseignez votre clé pour le module RAG Gemini
+      # - GEMINI_API_KEY=your_api_key_here
+    volumes:
+      # Volumes nommés persistants : survivent aux redéploiements, mises à jour et reboots du VPS
+      - xgboost_data:/app/data
+      - xgboost_models:/app/models
+      - xgboost_state:/root/.xgboost_trader
+
+volumes:
+  xgboost_data:
+  xgboost_models:
+  xgboost_state:
