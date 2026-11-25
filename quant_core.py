@@ -479,18 +479,21 @@ def add_features(df, labeling_mode="next_day", tb_horizon=5, tb_tp_mult=3.0, tb_
     gk_var = 0.5 * (hl_log ** 2) - (2.0 * np.log(2.0) - 1.0) * (co_log ** 2)
     df['GK_Vol_20'] = np.sqrt(gk_var.rolling(window=20, min_periods=10).mean().clip(lower=0.0))
 
-    # 5. RSI (14) — Lissage exponentiel de Wilder
+    # 5. RSI (14) — Lissage exponentiel de Wilder & dynamique de momentum
     delta = df['Close'].diff()
     gain = delta.where(delta > 0, 0.0).ewm(alpha=1.0 / 14.0, min_periods=14, adjust=False).mean()
     loss = (-delta.where(delta < 0, 0.0)).ewm(alpha=1.0 / 14.0, min_periods=14, adjust=False).mean()
     rs = gain / (loss + 1e-9)
     df['RSI'] = 100.0 - (100.0 / (1.0 + rs))
+    df['RSI_Change_5'] = df['RSI'].diff(5)
 
-    # 6. MACD normalisé par le cours
+    # 6. MACD normalisé par le cours + Histogramme & Accélération
     exp1 = df['Close'].ewm(span=12, adjust=False).mean()
     exp2 = df['Close'].ewm(span=26, adjust=False).mean()
     df['MACD'] = (exp1 - exp2) / (df['Close'] + 1e-9)
     df['Signal_Line'] = df['MACD'].ewm(span=9, adjust=False).mean()
+    df['MACD_Hist'] = df['MACD'] - df['Signal_Line']
+    df['MACD_Hist_Slope'] = df['MACD_Hist'].diff(3)
 
     # 7. Bandes de Bollinger & Z-Score
     df['BB_Mid'] = df['Close'].rolling(window=20).mean()
@@ -524,6 +527,7 @@ def add_features(df, labeling_mode="next_day", tb_horizon=5, tb_tp_mult=3.0, tb_
     minus_di14 = 100.0 * (minus_dm_actual.ewm(alpha=1.0 / 14.0, min_periods=14, adjust=False).mean() / tr14)
     dx = 100.0 * np.abs(plus_di14 - minus_di14) / (plus_di14 + minus_di14 + 1e-9)
     df['ADX'] = dx.ewm(alpha=1.0 / 14.0, min_periods=14, adjust=False).mean()
+    df['DI_Diff'] = plus_di14 - minus_di14  # Direction signée de tendance (+DI - -DI)
 
     # 10. Volume Ratio, CMF (20), MFI (14) & OBV Z-score
     vol_mean_20 = df['Volume'].rolling(window=20).mean()
@@ -563,7 +567,22 @@ def add_features(df, labeling_mode="next_day", tb_horizon=5, tb_tp_mult=3.0, tb_
     w_63 = min(63, max(15, len(df) // 4))
     df['Ret_63d'] = df['Close'].pct_change(periods=w_63)
     w_52w = min(252, max(20, len(df) // 2))
-    df['Dist_High_52w'] = (df['Close'] / (df['High'].rolling(window=w_52w, min_periods=20).max() + 1e-9)) - 1.0
+    high_52w = df['High'].rolling(window=w_52w, min_periods=20).max()
+    low_52w = df['Low'].rolling(window=w_52w, min_periods=20).min()
+    df['Dist_High_52w'] = (df['Close'] / (high_52w + 1e-9)) - 1.0
+    df['Pos_52w'] = ((df['Close'] - low_52w) / (high_52w - low_52w + 1e-9)).clip(0.0, 1.0)
+
+    # 12b. Régime directionnel & Breakout (Kaufman Efficiency Ratio, Donchian 20j, Downside Vol)
+    abs_change_10 = np.abs(df['Close'] - df['Close'].shift(10))
+    sum_abs_diff_10 = np.abs(df['Close'].diff()).rolling(window=10, min_periods=10).sum()
+    df['ER_10'] = (abs_change_10 / (sum_abs_diff_10 + 1e-9)).clip(0.0, 1.0)
+
+    donch_high_20 = df['High'].rolling(window=20, min_periods=10).max()
+    donch_low_20 = df['Low'].rolling(window=20, min_periods=10).min()
+    df['Donchian_Pos_20'] = ((df['Close'] - donch_low_20) / (donch_high_20 - donch_low_20 + 1e-9)).clip(0.0, 1.0)
+
+    neg_ret_sq = np.minimum(df['Returns'].fillna(0.0), 0.0) ** 2
+    df['Downside_Vol_20'] = np.sqrt(neg_ret_sq.rolling(window=20, min_periods=10).mean())
 
     # 13. VWAP Ratio
     vol_sum_14 = df['Volume'].rolling(window=14).sum() + 1e-9
@@ -707,6 +726,8 @@ def join_macro_data(df, macro_df):
         joined['RS_vs_SPY_5d'] = joined['Ret_5d'] - joined['SPY_Ret_5d']
     if 'Ret_21d' in joined.columns and 'SPY_Ret_20d' in joined.columns:
         joined['RS_vs_SPY_20d'] = joined['Ret_21d'] - joined['SPY_Ret_20d']
+    if 'VIX' in joined.columns:
+        joined['VIX_Change_5d'] = joined['VIX'].pct_change(5).replace([np.inf, -np.inf], 0.0).fillna(0.0).clip(-1.0, 2.0)
 
     return joined
 
@@ -910,19 +931,19 @@ class MLTrader:
     """
     def __init__(self):
         self.xgb_model = xgb.XGBClassifier(
-            n_estimators=100, learning_rate=0.05, max_depth=5,
-            subsample=0.8, colsample_bytree=0.8, reg_alpha=0.1, reg_lambda=1.0,
+            n_estimators=150, learning_rate=0.03, max_depth=4, min_child_weight=5,
+            gamma=0.1, subsample=0.8, colsample_bytree=0.75, reg_alpha=0.5, reg_lambda=2.0,
             objective='binary:logistic', random_state=42
         )
         self.rf_model = RandomForestClassifier(
-            n_estimators=100, max_depth=5, min_samples_leaf=5, random_state=42
+            n_estimators=120, max_depth=5, min_samples_leaf=10, max_features='sqrt', random_state=42
         )
         estimators = [('xgb', self.xgb_model), ('rf', self.rf_model)]
         if HAS_LIGHTGBM and lgb is not None:
             self.lgb_model = lgb.LGBMClassifier(
-                n_estimators=100, learning_rate=0.05, max_depth=5,
-                subsample=0.8, colsample_bytree=0.8, reg_alpha=0.1, reg_lambda=1.0,
-                random_state=42, verbose=-1
+                n_estimators=150, learning_rate=0.03, max_depth=4, num_leaves=15,
+                min_child_samples=20, subsample=0.8, colsample_bytree=0.75,
+                reg_alpha=0.5, reg_lambda=2.0, random_state=42, verbose=-1
             )
             estimators.append(('lgb', self.lgb_model))
         else:
@@ -945,16 +966,18 @@ class MLTrader:
         base_features = [
             'Returns', 'SMA_20_Ratio', 'SMA_50_Ratio', 'SMA_200_Ratio', 'EMA_9_Ratio',
             'SMA_50_Slope', 'SMA_200_Slope',
-            'Vol_5', 'Vol_20', 'Vol_Ratio_5_20', 'Vol_Ratio_20_60', 'GK_Vol_20',
-            'RSI', 'MACD', 'Signal_Line', 'BB_Percent', 'BB_Width', 'Price_ZScore_20',
-            'NATR', 'ADX', 'Volume_Ratio', 'CLV', 'CMF_20', 'MFI_14', 'OBV_ZScore',
+            'Vol_5', 'Vol_20', 'Vol_Ratio_5_20', 'Vol_Ratio_20_60', 'GK_Vol_20', 'Downside_Vol_20',
+            'RSI', 'RSI_Change_5', 'MACD', 'Signal_Line', 'MACD_Hist', 'MACD_Hist_Slope',
+            'BB_Percent', 'BB_Width', 'Price_ZScore_20',
+            'NATR', 'ADX', 'DI_Diff', 'ER_10', 'Donchian_Pos_20',
+            'Volume_Ratio', 'CLV', 'CMF_20', 'MFI_14', 'OBV_ZScore',
             'Upper_Shadow', 'Lower_Shadow', 'Gap_Open',
-            'Stoch_K', 'ROC', 'Ret_5d', 'Ret_21d', 'Ret_63d', 'Dist_High_52w',
+            'Stoch_K', 'ROC', 'Ret_5d', 'Ret_21d', 'Ret_63d', 'Dist_High_52w', 'Pos_52w',
             'VWAP_Ratio', 'Lag_1_Return', 'Lag_2_Return', 'Lag_3_Return',
             'DayOfWeek_Sin', 'DayOfWeek_Cos', 'TurnOfMonth'
         ]
         macro_features = [
-            'SPY_Return', 'VIX', 'VIX_Term_Ratio', 'TNX', 'Yield_Spread', 'DXY_Return',
+            'SPY_Return', 'VIX', 'VIX_Term_Ratio', 'VIX_Change_5d', 'TNX', 'Yield_Spread', 'DXY_Return',
             'RS_vs_SPY_1d', 'RS_vs_SPY_5d', 'RS_vs_SPY_20d', 'Rolling_Beta_60'
         ]
         return [f for f in base_features + macro_features if f in df.columns]
@@ -972,25 +995,74 @@ class MLTrader:
         except Exception:
             return list(X.columns)
 
+    @staticmethod
+    def _compute_sample_weights(y_series, min_decay_weight=0.45):
+        """
+        Pondération combinée pour séries financières non-stationnaires :
+        1. Décroissance temporelle exponentielle douce (donne plus de poids aux régimes récents)
+        2. Rééquilibrage doux des classes (corrige le biais Triple Barrier TP 3x / SL 1.5x)
+        """
+        n = len(y_series)
+        if n == 0:
+            return None
+        # Décroissance temporelle de min_decay_weight (ancien) à 1.0 (récent)
+        time_w = np.geomspace(min_decay_weight, 1.0, num=n)
+        y_arr = np.asarray(y_series, dtype=int)
+        counts = np.bincount(y_arr, minlength=2)
+        if counts[0] > 0 and counts[1] > 0:
+            # Rééquilibrage modéré (racine carrée du ratio) pour éviter de sur-amplifier le bruit
+            w0 = np.sqrt(n / (2.0 * counts[0]))
+            w1 = np.sqrt(n / (2.0 * counts[1]))
+            cls_w = np.where(y_arr == 1, w1, w0)
+            weights = time_w * cls_w
+        else:
+            weights = time_w
+        return weights / (np.mean(weights) + 1e-9)
+
+    def _fit_with_weights(self, model, X_tr, y_tr):
+        """Entraîne le modèle avec sample_weight temporel/équilibré, avec repli sûr si nécessaire."""
+        sw = self._compute_sample_weights(y_tr)
+        try:
+            model.fit(X_tr, y_tr, sample_weight=sw)
+            return model
+        except TypeError:
+            try:
+                model.fit(X_tr, y_tr)
+                return model
+            except ValueError:
+                pass
+        except ValueError:
+            pass
+        # Repli propre sur l'ensemble de base si un fold temporel de calibration est mono-classe
+        base_est = getattr(model, "estimator", None)
+        if base_est is not None:
+            try:
+                base_est.fit(X_tr, y_tr, sample_weight=sw)
+            except TypeError:
+                base_est.fit(X_tr, y_tr)
+            return base_est
+        model.fit(X_tr, y_tr)
+        return model
+
     def _build_ensemble(self, xgb_params=None, lgb_params=None, calibrate=False, n_samples=0, min_class_count=0):
-        """Construit l'ensemble XGBoost + RF + LightGBM avec calibration probabiliste optionnelle."""
+        """Construit l'ensemble XGBoost + RF + LightGBM avec calibration temporelle (TimeSeriesSplit)."""
         xp = {
-            'n_estimators': 100, 'learning_rate': 0.05, 'max_depth': 5,
-            'subsample': 0.8, 'colsample_bytree': 0.8, 'reg_alpha': 0.1, 'reg_lambda': 1.0,
+            'n_estimators': 150, 'learning_rate': 0.03, 'max_depth': 4, 'min_child_weight': 5,
+            'gamma': 0.1, 'subsample': 0.8, 'colsample_bytree': 0.75, 'reg_alpha': 0.5, 'reg_lambda': 2.0,
             'objective': 'binary:logistic', 'random_state': 42
         }
         if xgb_params:
             xp.update(xgb_params)
         self.xgb_model = xgb.XGBClassifier(**xp)
         self.rf_model = RandomForestClassifier(
-            n_estimators=100, max_depth=5, min_samples_leaf=5, random_state=42
+            n_estimators=120, max_depth=5, min_samples_leaf=10, max_features='sqrt', random_state=42
         )
         estimators = [('xgb', self.xgb_model), ('rf', self.rf_model)]
         if HAS_LIGHTGBM and lgb is not None:
             lp = {
-                'n_estimators': 100, 'learning_rate': 0.05, 'max_depth': 5,
-                'subsample': 0.8, 'colsample_bytree': 0.8, 'reg_alpha': 0.1, 'reg_lambda': 1.0,
-                'random_state': 42, 'verbose': -1
+                'n_estimators': 150, 'learning_rate': 0.03, 'max_depth': 4, 'num_leaves': 15,
+                'min_child_samples': 20, 'subsample': 0.8, 'colsample_bytree': 0.75,
+                'reg_alpha': 0.5, 'reg_lambda': 2.0, 'random_state': 42, 'verbose': -1
             }
             if lgb_params:
                 lp.update(lgb_params)
@@ -1000,8 +1072,10 @@ class MLTrader:
             self.lgb_model = None
 
         base_ensemble = VotingClassifier(estimators=estimators, voting='soft')
-        if calibrate and n_samples >= 90 and min_class_count >= 15:
-            return CalibratedClassifierCV(estimator=base_ensemble, method='sigmoid', cv=3)
+        if calibrate and n_samples >= 120 and min_class_count >= 20:
+            # Validation temporelle stricte (zéro fuite future dans la calibration Platt)
+            from sklearn.model_selection import TimeSeriesSplit
+            return CalibratedClassifierCV(estimator=base_ensemble, method='sigmoid', cv=TimeSeriesSplit(n_splits=3))
         return base_ensemble
 
     @staticmethod
@@ -1135,6 +1209,7 @@ class MLTrader:
             metrics['Trade Win Rate'] = trade_win_rate
             metrics['Payoff Ratio'] = float(payoff_ratio)
             metrics['Profit Factor'] = float(profit_factor)
+            metrics['Expectancy %'] = float((trade_win_rate * avg_win) - ((1.0 - trade_win_rate) * avg_loss))
             metrics['Trade Kelly %'] = max(0.0, float(trade_kelly))
             metrics['Half Kelly %'] = min(0.05, max(0.0, float(trade_kelly) / 2.0))
             metrics['Kelly %'] = metrics['Trade Kelly %']
@@ -1209,7 +1284,8 @@ class MLTrader:
         commission_rate=0.0005, slippage_rate=0.0010,
         use_breakeven_stop=True, use_trailing_stop=False,
         use_regime_filters=False, use_vol_sizing=False,
-        risk_per_trade_pct=0.02
+        risk_per_trade_pct=0.02,
+        entry_threshold=0.55, exit_threshold=0.45
     ):
         """
         Moteur de Backtest Événementiel Strictement Causal :
@@ -1235,14 +1311,14 @@ class MLTrader:
         has_sma200 = 'SMA_200' in test_data.columns
         has_rsi = 'RSI' in test_data.columns
 
-        # 1. Hystérésis de Probabilité
+        # 1. Hystérésis de Probabilité (seuils paramétrables)
         signals = []
         curr_sig = 0
         probs = test_data['Prob'].values if 'Prob' in test_data.columns else [0.5] * len(test_data)
         for p in probs:
-            if p > 0.55:
+            if p > entry_threshold:
                 curr_sig = 1
-            elif p < 0.45:
+            elif p < exit_threshold:
                 curr_sig = 0
             signals.append(curr_sig)
         test_data['Signal'] = signals
@@ -1449,7 +1525,7 @@ class MLTrader:
 
             min_cls = int(np.bincount(y_train).min()) if len(np.unique(y_train)) >= 2 else 0
             eval_model = self._build_ensemble(xgb_best, lgb_best, calibrate=calibrate, n_samples=len(X_train), min_class_count=min_cls)
-            eval_model.fit(X_train, y_train)
+            eval_model = self._fit_with_weights(eval_model, X_train, y_train)
 
             # Importances des variables
             importances = self._extract_feature_importances(eval_model, len(features))
@@ -1475,8 +1551,7 @@ class MLTrader:
             if retrain_final and len(X) >= 50 and len(np.unique(y)) >= 2:
                 min_cls_full = int(np.bincount(y).min())
                 prod_model = self._build_ensemble(xgb_best, lgb_best, calibrate=calibrate, n_samples=len(X), min_class_count=min_cls_full)
-                prod_model.fit(X, y)
-                self.model = prod_model
+                self.model = self._fit_with_weights(prod_model, X, y)
             else:
                 self.model = eval_model
 
@@ -1537,7 +1612,7 @@ class MLTrader:
 
                 min_cls = int(np.bincount(y_tr).min())
                 m = self._build_ensemble(xgb_best, lgb_best, calibrate=calibrate, n_samples=len(X_tr), min_class_count=min_cls)
-                m.fit(X_tr, y_tr)
+                m = self._fit_with_weights(m, X_tr, y_tr)
                 last_fitted_m = m
 
                 prob = m.predict_proba(X_te)[:, 1]
@@ -1585,8 +1660,7 @@ class MLTrader:
             if retrain_final and len(X_rec) >= 50 and len(np.unique(y_rec)) >= 2:
                 min_cls_rec = int(np.bincount(y_rec).min())
                 prod_m = self._build_ensemble(xgb_best, lgb_best, calibrate=calibrate, n_samples=len(X_rec), min_class_count=min_cls_rec)
-                prod_m.fit(X_rec, y_rec)
-                self.model = prod_m
+                self.model = self._fit_with_weights(prod_m, X_rec, y_rec)
             else:
                 self.model = last_fitted_m
 

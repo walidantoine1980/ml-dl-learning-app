@@ -312,6 +312,40 @@ class TestAutoTraderEngine(unittest.TestCase):
             self.assertEqual(len(pf_after["positions"]), 0)
             self.assertGreater(pf_after["cash"], 50000.0)
 
+    def test_08_new_quant_features_and_time_decay_weights(self):
+        """Vérifie les nouvelles features quantitatives (DI_Diff, ER_10, Donchian, MACD_Hist, etc.) et la pondération temporelle."""
+        from quant_core import MLTrader, add_features, join_macro_data
+
+        df_raw = _make_ohlcv_df(base_price=100.0, n_days=120)
+        df_feat = add_features(df_raw, labeling_mode="triple_barrier")
+        dates = df_raw.index
+        macro_df = pd.DataFrame({
+            "SPY_Return": np.zeros(len(dates)),
+            "SPY_Ret_5d": np.zeros(len(dates)),
+            "SPY_Ret_20d": np.zeros(len(dates)),
+            "VIX": np.linspace(15.0, 22.0, len(dates)),
+            "TNX": np.full(len(dates), 4.2),
+            "DXY_Return": np.zeros(len(dates)),
+            "VIX_Term_Ratio": np.ones(len(dates)),
+            "Yield_Spread": np.full(len(dates), 0.5),
+        }, index=dates)
+        df_full = join_macro_data(df_feat, macro_df)
+
+        for col in ["RSI_Change_5", "MACD_Hist", "MACD_Hist_Slope", "DI_Diff", "ER_10",
+                    "Donchian_Pos_20", "Downside_Vol_20", "Pos_52w", "VIX_Change_5d"]:
+            self.assertIn(col, df_full.columns, f"Nouvelle feature {col} manquante.")
+
+        # Dernière bougie t strictement conservée avec Target NaN
+        self.assertEqual(df_full.index[-1], df_raw.index[-1])
+        self.assertTrue(np.isnan(df_full["Target"].iloc[-1]))
+
+        # Pondération temporelle croissante (les observations récentes pèsent plus que les anciennes)
+        y_mock = pd.Series([0, 1, 0, 0, 1, 0, 0, 1, 0, 1])
+        w = MLTrader._compute_sample_weights(y_mock, min_decay_weight=0.45)
+        self.assertEqual(len(w), len(y_mock))
+        self.assertAlmostEqual(float(np.mean(w)), 1.0, places=4)
+        self.assertGreater(w[-1], w[1], "Le poids de la classe 1 récente doit dépasser celui de la classe 1 ancienne.")
+
 
 if __name__ == "__main__":
     unittest.main()
