@@ -24,6 +24,12 @@ if sys.platform.startswith('win'):
         pass
 import json
 import pickle
+try:
+    import joblib
+    HAS_JOBLIB = True
+except ImportError:
+    joblib = None
+    HAS_JOBLIB = False
 import numpy as np
 import pandas as pd
 import yfinance as yf
@@ -34,6 +40,7 @@ from scipy.optimize import brentq
 # Modèles ML
 import xgboost as xgb
 from sklearn.ensemble import RandomForestClassifier, VotingClassifier
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.metrics import accuracy_score
 
 try:
@@ -373,56 +380,119 @@ def get_option_multiplier_and_legislation(ticker):
 # 3. INGÉNIERIE DES CARACTÉRISTIQUES (FEATURE ENGINEERING)
 # =============================================================================
 
-def add_features(df):
+def _infer_periods_per_year(index):
+    """Déduit automatiquement la fréquence d'annualisation (252 journalier vs 52 hebdomadaire)."""
+    try:
+        if isinstance(index, pd.DatetimeIndex) and len(index) >= 3:
+            diffs = index.to_series().diff().dt.days.dropna()
+            if not diffs.empty and float(diffs.median()) >= 5.0:
+                return 52.0
+    except Exception:
+        pass
+    return 252.0
+
+
+def _compute_triple_barrier_labels(close_arr, high_arr, low_arr, atr_arr, horizon=5, tp_mult=3.0, sl_mult=1.5):
     """
-    Calcule les indicateurs techniques et ratios stationnaires.
-    CORRECTIF D'INTÉGRITÉ MAJEUR :
+    Triple Barrier Labeling (López de Prado) :
+    - Barrière haute : entry + tp_mult * ATR  -> label 1.0
+    - Barrière basse : entry - sl_mult * ATR  -> label 0.0
+    - Barrière verticale : horizon séances    -> 1.0 si Close_fin > entry sinon 0.0
+    - La dernière bougie t reste strictement NaN (pas de fuite future).
+    """
+    n = len(close_arr)
+    labels = np.full(n, np.nan, dtype=float)
+    for i in range(n - 1):
+        entry = close_arr[i]
+        atr_i = atr_arr[i]
+        if np.isnan(entry) or entry <= 0:
+            continue
+        if np.isnan(atr_i) or atr_i <= 0:
+            atr_i = entry * 0.02
+        upper = entry + tp_mult * atr_i
+        lower = entry - sl_mult * atr_i
+        end_j = min(i + horizon, n - 1)
+        hit = np.nan
+        for j in range(i + 1, end_j + 1):
+            low_hit = low_arr[j] <= lower
+            high_hit = high_arr[j] >= upper
+            if low_hit and high_hit:
+                hit = 0.0  # Conservateur en cas d'ambiguïté intra-bougie
+                break
+            elif low_hit:
+                hit = 0.0
+                break
+            elif high_hit:
+                hit = 1.0
+                break
+        if np.isnan(hit):
+            hit = 1.0 if close_arr[end_j] > entry else 0.0
+        labels[i] = hit
+    return labels
+
+
+def add_features(df, labeling_mode="next_day", tb_horizon=5, tb_tp_mult=3.0, tb_sl_mult=1.5):
+    """
+    Calcule les indicateurs techniques et ratios stationnaires (strictement causaux, sans bfill).
     - Conserve INTÉGRALEMENT la dernière bougie t (Close d'aujourd'hui) sans la supprimer.
-    - Ajoute le ratio NATR (Normalized ATR = ATR / Close) invariant d'échelle pour les arbres.
-    - Conserve l'ATR brut pour le dimensionnement monétaire des Stops et Take-Profits.
-    - Aplatit automatiquement les colonnes MultiIndex issues de yfinance.
+    - Lissage exponentiel de Wilder pour RSI (14), ATR (14) et ADX (14).
+    - Enrichi : volatilité Garman-Klass, ratios de régimes de vol, microstructure OHLC (CLV, gaps, mèches),
+      flux de volume (CMF, MFI, OBV Z-score), momentum multi-horizons (5j/21j/63j), distance 52s, calendrier.
+    - Supporte le labeling classique J+1 ('next_day') et Triple Barrier ('triple_barrier').
     """
     df = df.copy()
     if hasattr(df.columns, "droplevel") and getattr(df.columns, "nlevels", 1) > 1:
         df.columns = df.columns.droplevel(1)
     df = df.loc[:, ~df.columns.duplicated()].copy()
-    
+
     # 1. Rendements journaliers
     df['Returns'] = df['Close'].pct_change()
-    
-    # 2. Moyennes mobiles brutes (adaptatives pour supporter les historiques courts)
+
+    # 2. Moyennes mobiles brutes (strictement causales, sans bfill)
     w_20 = min(20, max(5, len(df) // 4))
     w_50 = min(50, max(10, len(df) // 2))
     w_200 = min(200, max(20, len(df) - 1))
-    
-    df['SMA_20'] = df['Close'].rolling(window=w_20, min_periods=w_20).mean().bfill()
-    df['SMA_50'] = df['Close'].rolling(window=w_50, min_periods=w_50).mean().bfill()
-    df['SMA_200'] = df['Close'].rolling(window=w_200, min_periods=min(50, w_200)).mean().bfill()
+
+    df['SMA_20'] = df['Close'].rolling(window=w_20, min_periods=w_20).mean()
+    df['SMA_50'] = df['Close'].rolling(window=w_50, min_periods=min(20, w_50)).mean()
+    df['SMA_200'] = df['Close'].rolling(window=w_200, min_periods=min(50, w_200)).mean()
     df['EMA_9'] = df['Close'].ewm(span=9, adjust=False).mean()
-    
-    # 3. Ratios stationnaires (Invariants d'échelle pour Machine Learning)
+
+    # 3. Ratios stationnaires & Pentes normalisées
     df['SMA_20_Ratio'] = (df['Close'] / (df['SMA_20'] + 1e-9)) - 1.0
     df['SMA_50_Ratio'] = (df['Close'] / (df['SMA_50'] + 1e-9)) - 1.0
     df['SMA_200_Ratio'] = (df['Close'] / (df['SMA_200'] + 1e-9)) - 1.0
     df['EMA_9_Ratio'] = (df['Close'] / (df['EMA_9'] + 1e-9)) - 1.0
-    
-    # 4. Volatilité historique
-    df['Vol_20'] = df['Returns'].rolling(window=20).std()
-    
-    # 5. RSI (14)
+    df['SMA_50_Slope'] = df['SMA_50'].pct_change(5)
+    df['SMA_200_Slope'] = df['SMA_200'].pct_change(10)
+
+    # 4. Volatilité historique, Ratios de régimes & Garman-Klass (OHLC)
+    df['Vol_5'] = df['Returns'].rolling(window=5, min_periods=5).std()
+    df['Vol_20'] = df['Returns'].rolling(window=20, min_periods=20).std()
+    w_vol60 = min(60, max(20, len(df) // 4))
+    df['Vol_60'] = df['Returns'].rolling(window=w_vol60, min_periods=min(20, w_vol60)).std()
+    df['Vol_Ratio_5_20'] = df['Vol_5'] / (df['Vol_20'] + 1e-9)
+    df['Vol_Ratio_20_60'] = df['Vol_20'] / (df['Vol_60'] + 1e-9)
+
+    hl_log = np.log((df['High'].clip(lower=1e-9)) / (df['Low'].clip(lower=1e-9)))
+    co_log = np.log((df['Close'].clip(lower=1e-9)) / (df['Open'].clip(lower=1e-9)))
+    gk_var = 0.5 * (hl_log ** 2) - (2.0 * np.log(2.0) - 1.0) * (co_log ** 2)
+    df['GK_Vol_20'] = np.sqrt(gk_var.rolling(window=20, min_periods=10).mean().clip(lower=0.0))
+
+    # 5. RSI (14) — Lissage exponentiel de Wilder
     delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    gain = delta.where(delta > 0, 0.0).ewm(alpha=1.0 / 14.0, min_periods=14, adjust=False).mean()
+    loss = (-delta.where(delta < 0, 0.0)).ewm(alpha=1.0 / 14.0, min_periods=14, adjust=False).mean()
     rs = gain / (loss + 1e-9)
-    df['RSI'] = 100 - (100 / (1 + rs))
-    
+    df['RSI'] = 100.0 - (100.0 / (1.0 + rs))
+
     # 6. MACD normalisé par le cours
     exp1 = df['Close'].ewm(span=12, adjust=False).mean()
     exp2 = df['Close'].ewm(span=26, adjust=False).mean()
     df['MACD'] = (exp1 - exp2) / (df['Close'] + 1e-9)
     df['Signal_Line'] = df['MACD'].ewm(span=9, adjust=False).mean()
-    
-    # 7. Bandes de Bollinger
+
+    # 7. Bandes de Bollinger & Z-Score
     df['BB_Mid'] = df['Close'].rolling(window=20).mean()
     df['BB_Std'] = df['Close'].rolling(window=20).std()
     df['BB_Upper'] = df['BB_Mid'] + (df['BB_Std'] * 2)
@@ -430,81 +500,132 @@ def add_features(df):
     bb_range = df['BB_Upper'] - df['BB_Lower']
     df['BB_Percent'] = np.where(bb_range > 0, (df['Close'] - df['BB_Lower']) / (bb_range + 1e-9), 0.5)
     df['BB_Width'] = bb_range / (df['BB_Mid'] + 1e-9)
-    
-    # 8. True Range & ATR & NATR
+    df['Price_ZScore_20'] = (df['Close'] - df['BB_Mid']) / (df['BB_Std'] + 1e-9)
+
+    # 8. True Range & ATR (Lissage de Wilder) & NATR
     high_low = df['High'] - df['Low']
     high_close = np.abs(df['High'] - df['Close'].shift())
     low_close = np.abs(df['Low'] - df['Close'].shift())
     ranges = pd.concat([high_low, high_close, low_close], axis=1)
-    true_range = np.max(ranges, axis=1)
-    df['ATR'] = true_range.rolling(14).mean()
-    # NATR : Normalized ATR en ratio du cours (Stationnaire)
+    true_range = ranges.max(axis=1)
+    df['ATR'] = true_range.ewm(alpha=1.0 / 14.0, min_periods=14, adjust=False).mean()
     df['NATR'] = df['ATR'] / (df['Close'] + 1e-9)
-    
-    # 9. ADX (Average Directional Index)
+
+    # 9. ADX (Average Directional Index — Lissage de Wilder)
     plus_dm = df['High'].diff()
     minus_dm = df['Low'].shift() - df['Low']
-    plus_dm = np.where(plus_dm < 0, 0, plus_dm)
-    minus_dm = np.where(minus_dm < 0, 0, minus_dm)
-    plus_dm_actual = np.where(plus_dm > minus_dm, plus_dm, 0)
-    minus_dm_actual = np.where(minus_dm > plus_dm, minus_dm, 0)
-    
-    tr14 = true_range.rolling(14).sum() + 1e-9
-    plus_di14 = 100 * (pd.Series(plus_dm_actual, index=df.index).rolling(14).sum() / tr14)
-    minus_di14 = 100 * (pd.Series(minus_dm_actual, index=df.index).rolling(14).sum() / tr14)
-    dx = 100 * np.abs(plus_di14 - minus_di14) / (plus_di14 + minus_di14 + 1e-9)
-    df['ADX'] = dx.rolling(14).mean()
-    
-    # 10. Volume Ratio
+    plus_dm = np.where(plus_dm < 0, 0.0, plus_dm)
+    minus_dm = np.where(minus_dm < 0, 0.0, minus_dm)
+    plus_dm_actual = pd.Series(np.where(plus_dm > minus_dm, plus_dm, 0.0), index=df.index)
+    minus_dm_actual = pd.Series(np.where(minus_dm > plus_dm, minus_dm, 0.0), index=df.index)
+
+    tr14 = true_range.ewm(alpha=1.0 / 14.0, min_periods=14, adjust=False).mean() + 1e-9
+    plus_di14 = 100.0 * (plus_dm_actual.ewm(alpha=1.0 / 14.0, min_periods=14, adjust=False).mean() / tr14)
+    minus_di14 = 100.0 * (minus_dm_actual.ewm(alpha=1.0 / 14.0, min_periods=14, adjust=False).mean() / tr14)
+    dx = 100.0 * np.abs(plus_di14 - minus_di14) / (plus_di14 + minus_di14 + 1e-9)
+    df['ADX'] = dx.ewm(alpha=1.0 / 14.0, min_periods=14, adjust=False).mean()
+
+    # 10. Volume Ratio, CMF (20), MFI (14) & OBV Z-score
     vol_mean_20 = df['Volume'].rolling(window=20).mean()
     df['Volume_Ratio'] = df['Volume'] / (vol_mean_20 + 1e-9)
-    
-    # 11. Stochastique (%K)
+
+    hl_span = (df['High'] - df['Low']).replace(0, np.nan)
+    df['CLV'] = (((df['Close'] - df['Low']) - (df['High'] - df['Close'])) / hl_span).fillna(0.0).clip(-1.0, 1.0)
+    mf_vol = df['CLV'] * df['Volume']
+    df['CMF_20'] = mf_vol.rolling(window=20, min_periods=10).sum() / (df['Volume'].rolling(window=20, min_periods=10).sum() + 1e-9)
+
+    typical_price = (df['High'] + df['Low'] + df['Close']) / 3.0
+    raw_mf = typical_price * df['Volume']
+    tp_diff = typical_price.diff()
+    pos_mf = raw_mf.where(tp_diff > 0, 0.0).rolling(window=14, min_periods=14).sum()
+    neg_mf = raw_mf.where(tp_diff < 0, 0.0).rolling(window=14, min_periods=14).sum()
+    df['MFI_14'] = 100.0 - (100.0 / (1.0 + pos_mf / (neg_mf + 1e-9)))
+
+    obv = (np.sign(df['Close'].diff().fillna(0.0)) * df['Volume']).cumsum()
+    obv_mean = obv.rolling(window=20, min_periods=10).mean()
+    obv_std = obv.rolling(window=20, min_periods=10).std()
+    df['OBV_ZScore'] = ((obv - obv_mean) / (obv_std + 1e-9)).clip(-5.0, 5.0)
+
+    # 11. Microstructure OHLC (Mèches & Gap d'ouverture)
+    df['Upper_Shadow'] = (df['High'] - np.maximum(df['Open'], df['Close'])) / (df['Close'] + 1e-9)
+    df['Lower_Shadow'] = (np.minimum(df['Open'], df['Close']) - df['Low']) / (df['Close'] + 1e-9)
+    df['Gap_Open'] = (df['Open'] / (df['Close'].shift(1) + 1e-9)) - 1.0
+
+    # 12. Stochastique (%K) & Momentum multi-horizons
     lowest_low = df['Low'].rolling(window=14).min()
     highest_high = df['High'].rolling(window=14).max()
     stoch_range = highest_high - lowest_low
-    df['Stoch_K'] = 100 * ((df['Close'] - lowest_low) / (stoch_range + 1e-9))
-    
-    # 12. ROC (Rate of Change 10j)
-    df['ROC'] = df['Close'].pct_change(periods=10) * 100
-    
+    df['Stoch_K'] = 100.0 * ((df['Close'] - lowest_low) / (stoch_range + 1e-9))
+
+    df['ROC'] = df['Close'].pct_change(periods=10) * 100.0
+    df['Ret_5d'] = df['Close'].pct_change(periods=5)
+    df['Ret_21d'] = df['Close'].pct_change(periods=21)
+    w_63 = min(63, max(15, len(df) // 4))
+    df['Ret_63d'] = df['Close'].pct_change(periods=w_63)
+    w_52w = min(252, max(20, len(df) // 2))
+    df['Dist_High_52w'] = (df['Close'] / (df['High'].rolling(window=w_52w, min_periods=20).max() + 1e-9)) - 1.0
+
     # 13. VWAP Ratio
-    typical_price = (df['High'] + df['Low'] + df['Close']) / 3
     vol_sum_14 = df['Volume'].rolling(window=14).sum() + 1e-9
     df['VWAP'] = (typical_price * df['Volume']).rolling(window=14).sum() / vol_sum_14
     df['VWAP_Ratio'] = (df['Close'] / (df['VWAP'] + 1e-9)) - 1.0
-    
+
     # 14. Lags stationnaires de rendements
     for i in range(1, 4):
         df[f'Lag_{i}'] = df['Close'].shift(i)
         df[f'Lag_{i}_Return'] = df['Returns'].shift(i)
-        
-    # 15. Cible future (Target)
-    future_diff = df['Close'].shift(-1) - df['Close']
-    df['Target'] = np.where(future_diff > 0, 1.0, np.where(future_diff < 0, 0.0, np.nan))
-    
-    # IMPORTANT: On ne supprime que les NaN des FEATURES initiales (ex: 200 premiers jours de chauffe)
+
+    # 15. Saisonnalité / Calendrier (encodage cyclique)
+    if isinstance(df.index, pd.DatetimeIndex):
+        dow = df.index.dayofweek
+        df['DayOfWeek_Sin'] = np.sin(2.0 * np.pi * dow / 5.0)
+        df['DayOfWeek_Cos'] = np.cos(2.0 * np.pi * dow / 5.0)
+        df['TurnOfMonth'] = np.where((df.index.day <= 3) | (df.index.day >= 28), 1.0, 0.0)
+    else:
+        df['DayOfWeek_Sin'] = 0.0
+        df['DayOfWeek_Cos'] = 1.0
+        df['TurnOfMonth'] = 0.0
+
+    # 16. Cible future (Target) : Classique J+1 ou Triple Barrier ATR
+    if labeling_mode == "triple_barrier":
+        df['Target'] = _compute_triple_barrier_labels(
+            df['Close'].values, df['High'].values, df['Low'].values, df['ATR'].values,
+            horizon=tb_horizon, tp_mult=tb_tp_mult, sl_mult=tb_sl_mult
+        )
+    else:
+        future_diff = df['Close'].shift(-1) - df['Close']
+        df['Target'] = np.where(future_diff > 0, 1.0, np.where(future_diff < 0, 0.0, np.nan))
+
+    # IMPORTANT: On ne supprime que les NaN des FEATURES initiales (période de chauffe)
     # mais ON CONSERVE la dernière ligne t où Target est NaN !
     feature_cols = [c for c in df.columns if c != 'Target']
     df = df.dropna(subset=feature_cols).copy()
-    
+
     return df
 
 
 def get_macro_data(period="2y", interval="1d"):
     """
     Télécharge et prépare les variables macroéconomiques globales :
-    - SPY (Marché US)
-    - ^VIX (Indice de volatilité et de panique)
-    - ^TNX (Taux 10 ans souverain américain)
-    - DX-Y.NYB (Indice Dollar US transformé en variation stationnaire)
+    - SPY (Marché US + rendements 1j/5j/20j pour force relative)
+    - ^VIX & ^VIX3M (Volatilité et structure à terme contango/backwardation)
+    - ^TNX & ^IRX (Taux 10 ans US et pente de courbe des taux 10Y-3M)
+    - DX-Y.NYB (Indice Dollar US en variation stationnaire)
     """
     try:
         spy_raw = yf.download("SPY", period=period, interval=interval, progress=False)
         vix_raw = yf.download("^VIX", period=period, interval=interval, progress=False)
         tnx_raw = yf.download("^TNX", period=period, interval=interval, progress=False)
         dxy_raw = yf.download("DX-Y.NYB", period=period, interval=interval, progress=False)
-        
+        try:
+            vix3m_raw = yf.download("^VIX3M", period=period, interval=interval, progress=False)
+        except Exception:
+            vix3m_raw = None
+        try:
+            irx_raw = yf.download("^IRX", period=period, interval=interval, progress=False)
+        except Exception:
+            irx_raw = None
+
         def extract_close(raw_df):
             if raw_df is None or raw_df.empty:
                 return pd.Series(dtype=float)
@@ -517,26 +638,43 @@ def get_macro_data(period="2y", interval="1d"):
                     return c.iloc[:, 0]
                 return c
             return pd.Series(dtype=float)
-            
+
         spy = extract_close(spy_raw)
         vix = extract_close(vix_raw)
         tnx = extract_close(tnx_raw)
         dxy = extract_close(dxy_raw)
-        
+        vix3m = extract_close(vix3m_raw)
+        irx = extract_close(irx_raw)
+
         if spy.empty:
             return None
-            
+
         macro = pd.DataFrame(index=spy.index)
         macro['SPY_Return'] = spy.pct_change()
+        macro['SPY_Ret_5d'] = spy.pct_change(5)
+        macro['SPY_Ret_20d'] = spy.pct_change(20)
         macro['VIX'] = vix
         macro['TNX'] = tnx
-        # Transformation du dollar en variation journalière stationnaire
         macro['DXY_Return'] = dxy.pct_change() if not dxy.empty else 0.0
-        
+
+        # Structure à terme du VIX (^VIX / ^VIX3M) : > 1.0 = backwardation (stress)
+        if not vix.empty and not vix3m.empty:
+            vix3m_aligned = vix3m.reindex(macro.index).ffill()
+            macro['VIX_Term_Ratio'] = (macro['VIX'] / (vix3m_aligned + 1e-9)).clip(0.5, 2.0)
+        else:
+            macro['VIX_Term_Ratio'] = 1.0
+
+        # Pente de la courbe des taux (^TNX - ^IRX)
+        if not tnx.empty and not irx.empty:
+            irx_aligned = irx.reindex(macro.index).ffill()
+            macro['Yield_Spread'] = macro['TNX'] - irx_aligned
+        else:
+            macro['Yield_Spread'] = 0.0
+
         # Nettoyage timezone pour alignement multi-marchés (Europe/US/Asie)
         if macro.index.tz is not None:
             macro.index = macro.index.tz_localize(None)
-            
+
         return macro.ffill().fillna(0.0)
     except Exception as e:
         print(f"Erreur de téléchargement des données macro: {e}")
@@ -544,7 +682,7 @@ def get_macro_data(period="2y", interval="1d"):
 
 
 def join_macro_data(df, macro_df):
-    """Jointure sécurisée des données macro avec alignement de calendrier et fuseau horaire."""
+    """Jointure sécurisée des données macro + calcul de la Force Relative et du Beta glissant vs SPY."""
     if macro_df is None:
         return df
     df = df.copy()
@@ -553,10 +691,23 @@ def join_macro_data(df, macro_df):
     if macro_df.index.tz is not None:
         macro_df = macro_df.copy()
         macro_df.index = macro_df.index.tz_localize(None)
-        
+
     joined = df.join(macro_df, how='left')
     macro_cols = list(macro_df.columns)
     joined[macro_cols] = joined[macro_cols].ffill().fillna(0.0)
+
+    # Force relative & Beta glissant vs SPY (strictement causaux)
+    if 'Returns' in joined.columns and 'SPY_Return' in joined.columns:
+        joined['RS_vs_SPY_1d'] = joined['Returns'] - joined['SPY_Return']
+        w_beta = min(60, max(20, len(joined) // 4))
+        cov_spy = joined['Returns'].rolling(window=w_beta, min_periods=15).cov(joined['SPY_Return'])
+        var_spy = joined['SPY_Return'].rolling(window=w_beta, min_periods=15).var()
+        joined['Rolling_Beta_60'] = (cov_spy / (var_spy + 1e-9)).clip(-3.0, 5.0).fillna(1.0)
+    if 'Ret_5d' in joined.columns and 'SPY_Ret_5d' in joined.columns:
+        joined['RS_vs_SPY_5d'] = joined['Ret_5d'] - joined['SPY_Ret_5d']
+    if 'Ret_21d' in joined.columns and 'SPY_Ret_20d' in joined.columns:
+        joined['RS_vs_SPY_20d'] = joined['Ret_21d'] - joined['SPY_Ret_20d']
+
     return joined
 
 
@@ -753,21 +904,24 @@ def evaluate_multi_regime_triggers(row, current_price, current_atr=None, trader_
 class MLTrader:
     """
     Moteur de Trading Quantitatif d'Ensemble.
-    Combine XGBoost, LightGBM et Random Forest avec vote probabiliste souple (soft voting).
-    Gère le backtest événementiel réaliste avec Stops ATR, Slippage et Commissions.
+    Combine XGBoost, LightGBM et Random Forest avec vote probabiliste souple (soft voting),
+    calibration optionnelle, élagage colinéaire, Optuna régularisé (neg_log_loss) et
+    backtest événementiel strictement causal (Stops ATR, Trailing Chandelier, Vol Sizing, Slippage, Commissions).
     """
     def __init__(self):
         self.xgb_model = xgb.XGBClassifier(
-            n_estimators=100, learning_rate=0.05, max_depth=5, 
+            n_estimators=100, learning_rate=0.05, max_depth=5,
+            subsample=0.8, colsample_bytree=0.8, reg_alpha=0.1, reg_lambda=1.0,
             objective='binary:logistic', random_state=42
         )
         self.rf_model = RandomForestClassifier(
-            n_estimators=100, max_depth=5, random_state=42
+            n_estimators=100, max_depth=5, min_samples_leaf=5, random_state=42
         )
         estimators = [('xgb', self.xgb_model), ('rf', self.rf_model)]
         if HAS_LIGHTGBM and lgb is not None:
             self.lgb_model = lgb.LGBMClassifier(
-                n_estimators=100, learning_rate=0.05, max_depth=5, 
+                n_estimators=100, learning_rate=0.05, max_depth=5,
+                subsample=0.8, colsample_bytree=0.8, reg_alpha=0.1, reg_lambda=1.0,
                 random_state=42, verbose=-1
             )
             estimators.append(('lgb', self.lgb_model))
@@ -784,17 +938,154 @@ class MLTrader:
         self.backtest_results = None
         self.advanced_metrics = {}
         self.closed_trades = []
+        self.saved_at = None
 
     def get_feature_list(self, df):
-        """Retourne la liste des features valides présentes dans le DataFrame."""
+        """Retourne la liste des features stationnaires valides présentes dans le DataFrame."""
         base_features = [
-            'Returns', 'SMA_20_Ratio', 'SMA_50_Ratio', 'SMA_200_Ratio', 'EMA_9_Ratio', 
-            'Vol_20', 'RSI', 'MACD', 'Signal_Line', 'BB_Percent', 'BB_Width', 'NATR', 'ADX', 
-            'Volume_Ratio', 'Stoch_K', 'ROC', 'VWAP_Ratio', 
-            'Lag_1_Return', 'Lag_2_Return', 'Lag_3_Return'
+            'Returns', 'SMA_20_Ratio', 'SMA_50_Ratio', 'SMA_200_Ratio', 'EMA_9_Ratio',
+            'SMA_50_Slope', 'SMA_200_Slope',
+            'Vol_5', 'Vol_20', 'Vol_Ratio_5_20', 'Vol_Ratio_20_60', 'GK_Vol_20',
+            'RSI', 'MACD', 'Signal_Line', 'BB_Percent', 'BB_Width', 'Price_ZScore_20',
+            'NATR', 'ADX', 'Volume_Ratio', 'CLV', 'CMF_20', 'MFI_14', 'OBV_ZScore',
+            'Upper_Shadow', 'Lower_Shadow', 'Gap_Open',
+            'Stoch_K', 'ROC', 'Ret_5d', 'Ret_21d', 'Ret_63d', 'Dist_High_52w',
+            'VWAP_Ratio', 'Lag_1_Return', 'Lag_2_Return', 'Lag_3_Return',
+            'DayOfWeek_Sin', 'DayOfWeek_Cos', 'TurnOfMonth'
         ]
-        macro_features = ['SPY_Return', 'VIX', 'TNX', 'DXY_Return']
+        macro_features = [
+            'SPY_Return', 'VIX', 'VIX_Term_Ratio', 'TNX', 'Yield_Spread', 'DXY_Return',
+            'RS_vs_SPY_1d', 'RS_vs_SPY_5d', 'RS_vs_SPY_20d', 'Rolling_Beta_60'
+        ]
         return [f for f in base_features + macro_features if f in df.columns]
+
+    def _prune_collinear_features(self, X, threshold=0.95):
+        """Élagage des features fortement colinéaires (|r| > threshold) pour réduire le surapprentissage."""
+        if X.shape[1] <= 8 or len(X) < 30:
+            return list(X.columns)
+        try:
+            corr_matrix = X.corr().abs()
+            upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+            to_drop = [col for col in upper.columns if any(upper[col] > threshold)]
+            kept = [c for c in X.columns if c not in to_drop]
+            return kept if len(kept) >= 8 else list(X.columns)
+        except Exception:
+            return list(X.columns)
+
+    def _build_ensemble(self, xgb_params=None, lgb_params=None, calibrate=False, n_samples=0, min_class_count=0):
+        """Construit l'ensemble XGBoost + RF + LightGBM avec calibration probabiliste optionnelle."""
+        xp = {
+            'n_estimators': 100, 'learning_rate': 0.05, 'max_depth': 5,
+            'subsample': 0.8, 'colsample_bytree': 0.8, 'reg_alpha': 0.1, 'reg_lambda': 1.0,
+            'objective': 'binary:logistic', 'random_state': 42
+        }
+        if xgb_params:
+            xp.update(xgb_params)
+        self.xgb_model = xgb.XGBClassifier(**xp)
+        self.rf_model = RandomForestClassifier(
+            n_estimators=100, max_depth=5, min_samples_leaf=5, random_state=42
+        )
+        estimators = [('xgb', self.xgb_model), ('rf', self.rf_model)]
+        if HAS_LIGHTGBM and lgb is not None:
+            lp = {
+                'n_estimators': 100, 'learning_rate': 0.05, 'max_depth': 5,
+                'subsample': 0.8, 'colsample_bytree': 0.8, 'reg_alpha': 0.1, 'reg_lambda': 1.0,
+                'random_state': 42, 'verbose': -1
+            }
+            if lgb_params:
+                lp.update(lgb_params)
+            self.lgb_model = lgb.LGBMClassifier(**lp)
+            estimators.append(('lgb', self.lgb_model))
+        else:
+            self.lgb_model = None
+
+        base_ensemble = VotingClassifier(estimators=estimators, voting='soft')
+        if calibrate and n_samples >= 90 and min_class_count >= 15:
+            return CalibratedClassifierCV(estimator=base_ensemble, method='sigmoid', cv=3)
+        return base_ensemble
+
+    @staticmethod
+    def _extract_feature_importances(fitted_model, n_features):
+        """Extrait l'importance moyenne des features (compatible VotingClassifier et CalibratedClassifierCV)."""
+        try:
+            if hasattr(fitted_model, 'estimators_'):
+                return np.mean([est.feature_importances_ for est in fitted_model.estimators_], axis=0)
+            if hasattr(fitted_model, 'calibrated_classifiers_'):
+                imps = []
+                for cc in fitted_model.calibrated_classifiers_:
+                    inner = getattr(cc, 'estimator', None)
+                    if inner is not None and hasattr(inner, 'estimators_'):
+                        imps.append(np.mean([est.feature_importances_ for est in inner.estimators_], axis=0))
+                if imps:
+                    return np.mean(imps, axis=0)
+        except Exception:
+            pass
+        return np.zeros(n_features, dtype=float)
+
+    def _optimize_hyperparams(self, X_tr, y_tr, embargo_days=5, n_trials=12):
+        """
+        Optimisation Bayésienne Optuna orientée finance (neg_log_loss + Purged Embargo CV)
+        pour XGBoost et LightGBM avec régularisation L1/L2 et sous-échantillonnage.
+        """
+        xgb_best, lgb_best = None, None
+        if not (HAS_OPTUNA and optuna is not None) or len(X_tr) < 80 or len(np.unique(y_tr)) < 2:
+            return xgb_best, lgb_best
+
+        optuna.logging.set_verbosity(optuna.logging.WARNING)
+        from sklearn.model_selection import TimeSeriesSplit
+        from sklearn.metrics import log_loss
+
+        gap = min(embargo_days, max(0, len(X_tr) // 20))
+        tscv = TimeSeriesSplit(n_splits=3, gap=gap)
+
+        def eval_cv_logloss(model_factory):
+            losses = []
+            for tr_idx, va_idx in tscv.split(X_tr):
+                y_f_tr, y_f_va = y_tr.iloc[tr_idx], y_tr.iloc[va_idx]
+                if len(np.unique(y_f_tr)) < 2 or len(np.unique(y_f_va)) < 2:
+                    continue
+                m = model_factory()
+                m.fit(X_tr.iloc[tr_idx], y_f_tr)
+                probs = np.clip(m.predict_proba(X_tr.iloc[va_idx])[:, 1], 1e-6, 1.0 - 1e-6)
+                losses.append(log_loss(y_f_va, probs))
+            return float(np.mean(losses)) if losses else 1.0
+
+        def obj_xgb(trial):
+            params = {
+                'n_estimators': trial.suggest_int('n_estimators', 60, 220),
+                'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.15, log=True),
+                'max_depth': trial.suggest_int('max_depth', 3, 6),
+                'min_child_weight': trial.suggest_int('min_child_weight', 1, 10),
+                'subsample': trial.suggest_float('subsample', 0.6, 1.0),
+                'colsample_bytree': trial.suggest_float('colsample_bytree', 0.6, 1.0),
+                'reg_alpha': trial.suggest_float('reg_alpha', 1e-3, 5.0, log=True),
+                'reg_lambda': trial.suggest_float('reg_lambda', 1e-2, 10.0, log=True),
+            }
+            return eval_cv_logloss(lambda: xgb.XGBClassifier(**params, objective='binary:logistic', random_state=42))
+
+        study_xgb = optuna.create_study(direction='minimize')
+        study_xgb.optimize(obj_xgb, n_trials=n_trials)
+        xgb_best = study_xgb.best_params
+
+        if HAS_LIGHTGBM and lgb is not None:
+            def obj_lgb(trial):
+                params = {
+                    'n_estimators': trial.suggest_int('n_estimators', 60, 220),
+                    'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.15, log=True),
+                    'max_depth': trial.suggest_int('max_depth', 3, 6),
+                    'num_leaves': trial.suggest_int('num_leaves', 8, 31),
+                    'subsample': trial.suggest_float('subsample', 0.6, 1.0),
+                    'colsample_bytree': trial.suggest_float('colsample_bytree', 0.6, 1.0),
+                    'reg_alpha': trial.suggest_float('reg_alpha', 1e-3, 5.0, log=True),
+                    'reg_lambda': trial.suggest_float('reg_lambda', 1e-2, 10.0, log=True),
+                }
+                return eval_cv_logloss(lambda: lgb.LGBMClassifier(**params, random_state=42, verbose=-1))
+
+            study_lgb = optuna.create_study(direction='minimize')
+            study_lgb.optimize(obj_lgb, n_trials=max(6, n_trials // 2))
+            lgb_best = study_lgb.best_params
+
+        return xgb_best, lgb_best
 
     def run_monte_carlo(self, returns, num_simulations=1000, ruin_threshold=0.8):
         """Évalue la probabilité de ruine (perte > 20% du capital) par Bootstrap Monte Carlo."""
@@ -808,67 +1099,96 @@ class MLTrader:
 
     def calculate_advanced_metrics(self, test_data, closed_trades=None):
         """
-        Calcule les métriques de performance et de risque institutionnelles.
-        - Métriques basées sur les transactions réelles fermées (Win Rate, Kelly, Payoff)
-        - Métriques de rendement journalier (Sharpe, Sortino, VaR, CVaR, Monte Carlo)
+        Calcule les métriques de performance et de risque institutionnelles :
+        - Annualisation adaptative (252 journalier vs 52 hebdomadaire)
+        - Sortino exact (semi-déviation sous 0)
+        - CAGR, Profit Factor, Calmar Ratio, Exposition %, Turnover annuel, Sharpe Buy & Hold
         """
         metrics = {}
-        strat_returns = test_data['Strategy_Return'].fillna(0)
-        
+        strat_returns = test_data['Strategy_Return'].fillna(0.0)
+        periods_per_year = _infer_periods_per_year(test_data.index)
+        n_periods = len(strat_returns)
+
         # 1. Métriques par trade réel fermé (si disponibles)
         if closed_trades and len(closed_trades) > 0:
             trades_df = pd.DataFrame(closed_trades)
             total_trades = len(trades_df)
             winning_trades = len(trades_df[trades_df['pnl'] > 0])
             trade_win_rate = winning_trades / total_trades if total_trades > 0 else 0.0
-            
+
             wins = trades_df[trades_df['pnl'] > 0]['pnl_pct']
             losses = trades_df[trades_df['pnl'] < 0]['pnl_pct'].abs()
             avg_win = wins.mean() if not wins.empty else 0.0
             avg_loss = losses.mean() if not losses.empty else 1.0
             payoff_ratio = (avg_win / avg_loss) if avg_loss > 0 else 0.0
-            
-            # Formule de Kelly classique basée sur les vrais paris fermés
+
+            gross_profit = float(trades_df[trades_df['pnl'] > 0]['pnl'].sum())
+            gross_loss = float(trades_df[trades_df['pnl'] < 0]['pnl'].abs().sum())
+            profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (gross_profit if gross_profit > 0 else 0.0)
+
             if payoff_ratio > 0 and trade_win_rate > 0:
                 trade_kelly = trade_win_rate - ((1.0 - trade_win_rate) / payoff_ratio)
             else:
                 trade_kelly = 0.0
-                
+
             metrics['Total Trades'] = total_trades
             metrics['Trade Win Rate'] = trade_win_rate
-            metrics['Payoff Ratio'] = payoff_ratio
-            metrics['Trade Kelly %'] = max(0.0, trade_kelly)
-            metrics['Half Kelly %'] = min(0.05, max(0.0, trade_kelly / 2.0))
+            metrics['Payoff Ratio'] = float(payoff_ratio)
+            metrics['Profit Factor'] = float(profit_factor)
+            metrics['Trade Kelly %'] = max(0.0, float(trade_kelly))
+            metrics['Half Kelly %'] = min(0.05, max(0.0, float(trade_kelly) / 2.0))
             metrics['Kelly %'] = metrics['Trade Kelly %']
         else:
-            # Fallback journalier
             winning_days = len(strat_returns[strat_returns > 0])
             total_trades_days = len(strat_returns[strat_returns != 0])
             trade_win_rate = winning_days / total_trades_days if total_trades_days > 0 else 0.0
             metrics['Total Trades'] = 0
             metrics['Trade Win Rate'] = trade_win_rate
+            metrics['Payoff Ratio'] = 0.0
+            metrics['Profit Factor'] = 0.0
             metrics['Trade Kelly %'] = 0.0
             metrics['Half Kelly %'] = 0.0
             metrics['Kelly %'] = 0.0
 
         metrics['Win Rate'] = trade_win_rate
-        
-        # 2. Drawdown Maximum
-        cum_returns = (1 + strat_returns).cumprod()
+
+        # 2. Drawdown Maximum & CAGR & Calmar
+        cum_returns = (1.0 + strat_returns).cumprod()
         rolling_max = cum_returns.cummax()
         drawdown = (cum_returns - rolling_max) / rolling_max
-        metrics['Max Drawdown'] = float(drawdown.min()) if not drawdown.empty else 0.0
-        
-        # 3. Sharpe & Sortino
-        mean_ret = strat_returns.mean()
-        std_ret = strat_returns.std()
-        metrics['Sharpe Ratio'] = float(mean_ret / std_ret * np.sqrt(252)) if std_ret > 0 else 0.0
-        
-        downside_returns = strat_returns[strat_returns < 0]
-        downside_std = downside_returns.std()
-        metrics['Sortino Ratio'] = float(mean_ret / downside_std * np.sqrt(252)) if downside_std > 0 else 0.0
-        
-        # 4. VaR 95% & CVaR (Expected Shortfall)
+        max_dd = float(drawdown.min()) if not drawdown.empty else 0.0
+        metrics['Max Drawdown'] = max_dd
+
+        years = max(n_periods / periods_per_year, 1.0 / periods_per_year)
+        final_cum = float(cum_returns.iloc[-1]) if not cum_returns.empty else 1.0
+        cagr = (final_cum ** (1.0 / years) - 1.0) if final_cum > 0 else -1.0
+        metrics['CAGR'] = float(cagr)
+        metrics['Calmar Ratio'] = float(cagr / abs(max_dd)) if abs(max_dd) > 1e-6 else 0.0
+
+        # 3. Sharpe & Sortino exact (semi-déviation par rapport à 0) & Sharpe Marché (Buy & Hold)
+        mean_ret = float(strat_returns.mean())
+        std_ret = float(strat_returns.std())
+        metrics['Sharpe Ratio'] = float(mean_ret / std_ret * np.sqrt(periods_per_year)) if std_ret > 0 else 0.0
+
+        downside_sq = np.minimum(strat_returns.values, 0.0) ** 2
+        downside_dev = float(np.sqrt(np.mean(downside_sq))) if len(downside_sq) > 0 else 0.0
+        metrics['Sortino Ratio'] = float(mean_ret / downside_dev * np.sqrt(periods_per_year)) if downside_dev > 0 else 0.0
+
+        if 'Close' in test_data.columns and len(test_data) > 2:
+            mkt_ret = test_data['Close'].pct_change().dropna()
+            mkt_std = float(mkt_ret.std()) if not mkt_ret.empty else 0.0
+            metrics['Market Sharpe Ratio'] = float(mkt_ret.mean() / mkt_std * np.sqrt(periods_per_year)) if mkt_std > 0 else 0.0
+        else:
+            metrics['Market Sharpe Ratio'] = 0.0
+
+        # 4. Exposition (% du temps investi) & Turnover annuel
+        if 'Invested' in test_data.columns and len(test_data) > 0:
+            metrics['Exposure %'] = float(test_data['Invested'].mean())
+        else:
+            metrics['Exposure %'] = float((strat_returns != 0).mean()) if len(strat_returns) > 0 else 0.0
+        metrics['Annual Turnover'] = float(metrics['Total Trades'] / years) if years > 0 else 0.0
+
+        # 5. VaR 95% & CVaR (Expected Shortfall)
         if not strat_returns.empty:
             var_95 = float(np.percentile(strat_returns.dropna(), 5))
             metrics['VaR (95%)'] = var_95
@@ -876,41 +1196,45 @@ class MLTrader:
         else:
             metrics['VaR (95%)'] = 0.0
             metrics['CVaR'] = 0.0
-            
-        # 5. Probabilité de Ruine
+
+        # 6. Probabilité de Ruine
         metrics['Probabilité de Ruine'] = self.run_monte_carlo(strat_returns.dropna().values)
-        
+
         self.advanced_metrics = metrics
         return metrics
 
     def run_event_driven_backtest(
-        self, test_data, initial_capital=100000.0, 
+        self, test_data, initial_capital=100000.0,
         use_atr_stops=True, atr_sl_mult=1.5, atr_tp_mult=3.0,
         commission_rate=0.0005, slippage_rate=0.0010,
-        use_breakeven_stop=True
+        use_breakeven_stop=True, use_trailing_stop=False,
+        use_regime_filters=False, use_vol_sizing=False,
+        risk_per_trade_pct=0.02
     ):
         """
-        Moteur de Backtest Événementiel Réaliste :
-        - Exécution à l'Open du signal calculé à la clôture de la veille (zéro biais d'anticipation).
-        - Slippage (0.10%) et Commissions (0.05%) rigoureusement déduits à l'achat et à la vente.
-        - Filtre d'Hystérésis (0.55 / 0.45) pour limiter le churning et les faux signaux.
-        - Coupe-circuit Macro VIX > 30 (passage forcé à 100% Cash).
-        - VRAIS STOPS DYNAMIQUES ATR exécutés en cours de séance :
-            * Stop-Loss déclenché si Low <= Stop-Loss
-            * Take-Profit déclenché si High >= Take-Profit
+        Moteur de Backtest Événementiel Strictement Causal :
+        - Exécution à l'Open du signal de la veille (i-1) — zéro look-ahead bias.
+        - Coupe-circuit Macro VIX > 30 basé sur VIX(i-1) (connu avant l'Open du jour i).
+        - Aucune ré-entrée le même jour après une sortie / stop.
+        - Mise à jour Breakeven & Trailing Stop (Chandelier Exit) en fin de séance pour effet dès i+1.
+        - Commissions d'entrée et de sortie exactes, Position Sizing ATR/Vol et filtres de régime optionnels.
         """
         test_data = test_data.copy()
         cash = float(initial_capital)
         shares = 0.0
-        
+
         portfolio_values = []
         daily_returns = []
+        invested_flags = []
         last_val = float(initial_capital)
-        
+
         has_open = 'Open' in test_data.columns
         has_high_low = ('High' in test_data.columns) and ('Low' in test_data.columns)
         has_atr = 'ATR' in test_data.columns
-        
+        has_vix = 'VIX' in test_data.columns
+        has_sma200 = 'SMA_200' in test_data.columns
+        has_rsi = 'RSI' in test_data.columns
+
         # 1. Hystérésis de Probabilité
         signals = []
         curr_sig = 0
@@ -922,69 +1246,82 @@ class MLTrader:
                 curr_sig = 0
             signals.append(curr_sig)
         test_data['Signal'] = signals
-        
-        # Coupe-circuit Macro VIX
-        if 'VIX' in test_data.columns:
+
+        # Coupe-circuit Macro VIX sur le signal de fin de journée (appliqué le lendemain à l'Open)
+        if has_vix:
             test_data.loc[test_data['VIX'] > 30, 'Signal'] = 0
-            
+
         closed_trades = []
         entry_price = 0.0
+        entry_commission = 0.0
+        entry_atr = 0.0
         entry_date = None
         entry_index = None
         current_sl = 0.0
         current_tp = 0.0
-        
+        highest_since_entry = 0.0
+
         for i in range(len(test_data)):
             row = test_data.iloc[i]
+            prev_row = test_data.iloc[i - 1] if i > 0 else None
             date = test_data.index[i]
-            
-            # Latence : décision issue de la veille (i-1)
-            raw_signal = 0 if i == 0 else test_data['Signal'].iloc[i-1]
+
+            # Décisions strictement issues de la veille (i-1)
+            raw_signal = 0 if i == 0 else int(test_data['Signal'].iloc[i - 1])
+            prev_vix = float(prev_row['VIX']) if (prev_row is not None and has_vix and not pd.isna(prev_row['VIX'])) else 18.0
             current_open = float(row['Open']) if has_open else float(row['Close'])
             current_close = float(row['Close'])
             current_high = float(row['High']) if has_high_low else current_close
             current_low = float(row['Low']) if has_high_low else current_close
-            current_atr = float(row['ATR']) if has_atr and not pd.isna(row['ATR']) else (current_close * 0.02)
-            
+
+            if prev_row is not None and has_atr and not pd.isna(prev_row['ATR']):
+                prev_atr = float(prev_row['ATR'])
+            elif has_atr and not pd.isna(row['ATR']):
+                prev_atr = float(row['ATR'])
+            else:
+                prev_atr = current_open * 0.02
+
+            exited_today = False
+
             # --- VÉRIFICATION DES POSITIONS OUVERTES ---
             if shares > 0:
                 exit_price = None
                 exit_reason = None
-                
-                # Mise à jour Breakeven Stop : dès que le High dépasse 1R (entry + 1.5 ATR), remonter le SL au prix d'entrée
-                if use_atr_stops and use_breakeven_stop and current_high >= entry_price + (atr_sl_mult * current_atr):
-                    current_sl = max(current_sl, entry_price)
-                
-                # A. Stop-Loss / Breakeven Stop ATR touché en séance
-                if use_atr_stops and current_low <= current_sl:
-                    # Exécution au stop loss (ou à l'ouverture si gap baissier)
-                    exit_price = min(current_open, current_sl) * (1.0 - slippage_rate)
-                    exit_reason = "Breakeven Stop (0 Risque)" if current_sl >= entry_price else f"Stop Loss ({atr_sl_mult:.1f} ATR)"
-                # B. Take-Profit ATR touché en séance
-                elif use_atr_stops and current_high >= current_tp:
-                    # Exécution au take profit (ou à l'ouverture si gap haussier)
-                    exit_price = max(current_open, current_tp) * (1.0 - slippage_rate)
-                    exit_reason = f"Take Profit ({atr_tp_mult:.1f} ATR)"
-                # C. Coupe-circuit Macro VIX (> 30)
-                elif 'VIX' in row and float(row['VIX']) > 30:
+
+                # A. Coupe-circuit Macro VIX > 30 connu avant l'ouverture (VIX de la veille i-1)
+                if has_vix and prev_vix > 30:
                     exit_price = current_open * (1.0 - slippage_rate)
                     exit_reason = "VIX > 30 (Circuit Breaker)"
-                # D. Signal ML inversé (Probabilité < 0.45)
+                # B. Signal ML inversé connu avant l'ouverture (Prob(i-1) < 0.45)
                 elif raw_signal == 0:
                     exit_price = current_open * (1.0 - slippage_rate)
                     exit_reason = "Signal Exit (< 0.45)"
-                    
+                # C. Stop-Loss / Breakeven / Trailing Stop ATR touché en séance (niveaux fixés avant séance)
+                elif use_atr_stops and current_low <= current_sl:
+                    exit_price = min(current_open, current_sl) * (1.0 - slippage_rate)
+                    if use_trailing_stop and current_sl > entry_price:
+                        exit_reason = "Trailing Stop ATR (Chandelier)"
+                    elif current_sl >= entry_price:
+                        exit_reason = "Breakeven Stop (0 Risque)"
+                    else:
+                        exit_reason = f"Stop Loss ({atr_sl_mult:.1f} ATR)"
+                # D. Take-Profit ATR fixe (uniquement si Trailing Stop non activé)
+                elif use_atr_stops and (not use_trailing_stop) and current_high >= current_tp:
+                    exit_price = max(current_open, current_tp) * (1.0 - slippage_rate)
+                    exit_reason = f"Take Profit ({atr_tp_mult:.1f} ATR)"
+
                 # Exécution de la sortie
                 if exit_price is not None:
                     proceeds = shares * exit_price
-                    commission = proceeds * commission_rate
-                    cash += proceeds - commission
-                    
-                    pnl = (exit_price - entry_price) * shares - (2 * commission)
-                    pnl_pct = (exit_price - entry_price) / entry_price if entry_price > 0 else 0.0
+                    exit_commission = proceeds * commission_rate
+                    cash += proceeds - exit_commission
+
+                    cost_basis = (entry_price * shares) + entry_commission
+                    pnl = (proceeds - exit_commission) - cost_basis
+                    pnl_pct = pnl / cost_basis if cost_basis > 0 else 0.0
                     diff = date - entry_date if entry_date is not None else None
                     duration = diff.days if hasattr(diff, 'days') else max(1, i - (entry_index if entry_index is not None else i - 1))
-                    
+
                     closed_trades.append({
                         'entry_date': entry_date,
                         'exit_date': date,
@@ -998,212 +1335,261 @@ class MLTrader:
                     })
                     shares = 0.0
                     entry_price = 0.0
+                    entry_commission = 0.0
+                    entry_atr = 0.0
                     entry_date = None
                     entry_index = None
                     current_sl = 0.0
                     current_tp = 0.0
+                    highest_since_entry = 0.0
+                    exited_today = True
+                else:
+                    # Mise à jour causale en FIN de séance (effective dès la séance suivante i+1)
+                    highest_since_entry = max(highest_since_entry, current_high)
+                    if use_atr_stops and use_breakeven_stop and highest_since_entry >= entry_price + (atr_sl_mult * entry_atr):
+                        current_sl = max(current_sl, entry_price)
+                    if use_atr_stops and use_trailing_stop and highest_since_entry >= entry_price + (atr_sl_mult * entry_atr):
+                        chandelier_sl = highest_since_entry - (2.0 * entry_atr)
+                        current_sl = max(current_sl, chandelier_sl)
 
-            # --- VÉRIFICATION DES NOUVEAUX ACHATS ---
-            if raw_signal == 1 and shares == 0:
-                exec_price = current_open * (1.0 + slippage_rate)
-                investable = cash / (1.0 + commission_rate)
-                shares = investable / exec_price
-                commission = investable * commission_rate
-                cash -= (shares * exec_price + commission)
-                
-                entry_price = exec_price
-                entry_date = date
-                entry_index = i
-                # Calcul des niveaux de Stop-Loss et Take-Profit basés sur l'ATR
-                current_sl = entry_price - (atr_sl_mult * current_atr)
-                current_tp = entry_price + (atr_tp_mult * current_atr)
+            # --- VÉRIFICATION DES NOUVEAUX ACHATS (jamais le même jour qu'une sortie) ---
+            if raw_signal == 1 and shares == 0 and not exited_today:
+                regime_ok = True
+                if use_regime_filters and prev_row is not None:
+                    if has_sma200 and not pd.isna(prev_row['SMA_200']) and float(prev_row['Close']) < float(prev_row['SMA_200']):
+                        regime_ok = False
+                    if has_rsi and not pd.isna(prev_row['RSI']) and float(prev_row['RSI']) >= 75.0:
+                        regime_ok = False
+
+                if regime_ok and cash > 10.0:
+                    exec_price = current_open * (1.0 + slippage_rate)
+                    stop_dist = max(atr_sl_mult * prev_atr, exec_price * 0.005)
+
+                    if use_vol_sizing:
+                        # Risque fixe (ex: 2% du capital par stop ATR), modulé si VIX élevé (20-30)
+                        risk_budget = cash * risk_per_trade_pct
+                        if has_vix and 20.0 < prev_vix <= 30.0:
+                            risk_budget *= 0.75
+                        target_shares = risk_budget / stop_dist
+                        max_investable = cash / (1.0 + commission_rate)
+                        investable = min(target_shares * exec_price, max_investable)
+                    else:
+                        investable = cash / (1.0 + commission_rate)
+
+                    if investable > 10.0:
+                        shares = investable / exec_price
+                        entry_commission = investable * commission_rate
+                        cash -= (shares * exec_price + entry_commission)
+
+                        entry_price = exec_price
+                        entry_atr = prev_atr
+                        entry_date = date
+                        entry_index = i
+                        highest_since_entry = max(current_high, entry_price)
+                        current_sl = entry_price - (atr_sl_mult * entry_atr)
+                        current_tp = entry_price + (atr_tp_mult * entry_atr)
 
             # Évaluation Mark-to-Market de fin de séance
             current_val = cash + (shares * current_close)
             portfolio_values.append(current_val)
+            invested_flags.append(1.0 if shares > 0 else 0.0)
             ret = (current_val - last_val) / last_val if last_val > 0 else 0.0
             daily_returns.append(ret)
             last_val = current_val
 
         test_data['Event_Portfolio_Value'] = portfolio_values
         test_data['Strategy_Return'] = daily_returns
+        test_data['Invested'] = invested_flags
         test_data['Cum_Strategy_Return'] = test_data['Event_Portfolio_Value'] / initial_capital
         first_close = float(test_data['Close'].iloc[0]) if len(test_data) > 0 and float(test_data['Close'].iloc[0]) > 0 else 1.0
         test_data['Cum_Market_Return'] = test_data['Close'] / first_close
-        
+
         self.closed_trades = closed_trades
         self.calculate_advanced_metrics(test_data, closed_trades)
         return test_data
 
     def train(
-        self, data, optimize=False, use_wfa=False, 
-        wfa_train_window="5Y", wfa_step="6M", 
+        self, data, optimize=False, use_wfa=False,
+        wfa_train_window="5Y", wfa_step="6M",
         wfa_start_date=None, wfa_end_date=None,
-        progress_callback=None
+        progress_callback=None,
+        calibrate=False, embargo_days=5, retrain_final=True,
+        prune_collinear=True, use_trailing_stop=False,
+        use_regime_filters=False, use_vol_sizing=False
     ):
         """
-        Entraîne le modèle avec ou sans Walk-Forward Analysis (WFA) et Optuna.
-        - Exclut proprement les NaN de la cible pour l'entraînement.
-        - Conserve l'accès au dernier bar pour la prédiction en direct.
+        Entraîne le modèle avec ou sans Walk-Forward Analysis (WFA), Purged Embargo,
+        Optuna (neg_log_loss + régularisation), calibration probabiliste et ré-entraînement final jusqu'à t-1.
         """
-        features = self.get_feature_list(data)
-        self.features = list(features)
-        
-        # Filtre d'entraînement propre : seules les lignes ayant une Target connue sont entraînées
+        raw_features = self.get_feature_list(data)
         valid_train = data.dropna(subset=['Target'])
+        if prune_collinear:
+            features = self._prune_collinear_features(valid_train[raw_features], threshold=0.95)
+        else:
+            features = list(raw_features)
+        self.features = list(features)
+
         X = valid_train[features]
         y = valid_train['Target'].astype(int)
-        
+
         if not use_wfa:
             split = int(len(X) * 0.8)
-            X_train, X_test = X.iloc[:split], X.iloc[split:]
-            y_train, y_test = y.iloc[:split], y.iloc[split:]
-            
-            # Robustesse : si la cible ne contient qu'une seule classe (marché purement haussier ou baissier)
+            gap = min(embargo_days, max(0, split // 15))
+            train_end_idx = max(20, split - gap)
+            X_train, X_test = X.iloc[:train_end_idx], X.iloc[split:]
+            y_train, y_test = y.iloc[:train_end_idx], y.iloc[split:]
+
             if len(np.unique(y_train)) < 2:
                 y_train = y_train.copy()
                 y_train.iloc[0] = 1 - int(y_train.iloc[0])
-            
+
+            xgb_best, lgb_best = (None, None)
             if optimize:
-                if HAS_OPTUNA and optuna is not None:
-                    optuna.logging.set_verbosity(optuna.logging.WARNING)
-                    from sklearn.model_selection import TimeSeriesSplit, cross_val_score
-                    tscv = TimeSeriesSplit(n_splits=3)
+                xgb_best, lgb_best = self._optimize_hyperparams(X_train, y_train, embargo_days=embargo_days)
 
-                    def objective(trial):
-                        param = {
-                            'n_estimators': trial.suggest_int('n_estimators', 50, 250),
-                            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.2, log=True),
-                            'max_depth': trial.suggest_int('max_depth', 3, 7)
-                        }
-                        m = xgb.XGBClassifier(**param, objective='binary:logistic', random_state=42)
-                        return cross_val_score(m, X_train, y_train, cv=tscv, scoring='accuracy').mean()
+            min_cls = int(np.bincount(y_train).min()) if len(np.unique(y_train)) >= 2 else 0
+            eval_model = self._build_ensemble(xgb_best, lgb_best, calibrate=calibrate, n_samples=len(X_train), min_class_count=min_cls)
+            eval_model.fit(X_train, y_train)
 
-                    study = optuna.create_study(direction='maximize')
-                    study.optimize(objective, n_trials=10)
-                    best_params = study.best_params
-                    self.xgb_model = xgb.XGBClassifier(**best_params, objective='binary:logistic', random_state=42)
-
-                estimators = [('xgb', self.xgb_model), ('rf', self.rf_model)]
-                if HAS_LIGHTGBM and self.lgb_model is not None:
-                    estimators.append(('lgb', self.lgb_model))
-                self.model = VotingClassifier(
-                    estimators=estimators,
-                    voting='soft'
-                )
-                self.model.fit(X_train, y_train)
-            else:
-                self.model.fit(X_train, y_train)
-                
             # Importances des variables
-            importances = np.mean([est.feature_importances_ for est in self.model.estimators_], axis=0)
+            importances = self._extract_feature_importances(eval_model, len(features))
             self.feature_importances = pd.DataFrame(
                 {'Feature': features, 'Importance': importances}
             ).sort_values(by='Importance', ascending=True)
-            
-            # Backtest sur le jeu de test
+
+            # Backtest strictement out-of-sample sur le jeu de test
             test_data = valid_train.iloc[split:].copy()
             clean_test = test_data[features]
-            test_data['Prob'] = self.model.predict_proba(clean_test)[:, 1]
-            test_data = self.run_event_driven_backtest(test_data)
-            
+            test_data['Prob'] = eval_model.predict_proba(clean_test)[:, 1]
+            test_data = self.run_event_driven_backtest(
+                test_data,
+                use_trailing_stop=use_trailing_stop,
+                use_regime_filters=use_regime_filters,
+                use_vol_sizing=use_vol_sizing
+            )
+
             self.backtest_results = test_data
-            self.accuracy = accuracy_score(y_test, self.model.predict(X_test))
+            self.accuracy = accuracy_score(y_test, eval_model.predict(X_test))
+
+            # Ré-entraînement final jusqu'à t-1 pour la prédiction en direct
+            if retrain_final and len(X) >= 50 and len(np.unique(y)) >= 2:
+                min_cls_full = int(np.bincount(y).min())
+                prod_model = self._build_ensemble(xgb_best, lgb_best, calibrate=calibrate, n_samples=len(X), min_class_count=min_cls_full)
+                prod_model.fit(X, y)
+                self.model = prod_model
+            else:
+                self.model = eval_model
+
             self.is_trained = True
             return features
-            
+
         else:
-            # --- WALK FORWARD ANALYSIS (WFA) DYNAMIQUE ---
+            # --- WALK FORWARD ANALYSIS (WFA) DYNAMIQUE AVEC PURGED EMBARGO ---
             window_map = {"2Y": pd.DateOffset(years=2), "5Y": pd.DateOffset(years=5), "7Y": pd.DateOffset(years=7)}
             step_map = {"1M": pd.DateOffset(months=1), "2M": pd.DateOffset(months=2), "6M": pd.DateOffset(months=6), "1Y": pd.DateOffset(years=1)}
-            
+
             train_window = window_map.get(wfa_train_window, pd.DateOffset(years=5))
             step_size = step_map.get(wfa_step, pd.DateOffset(months=6))
-            
+            embargo_offset = pd.Timedelta(days=int(embargo_days))
+
             last_ts = pd.Timestamp(valid_train.index[-1])
             first_ts = pd.Timestamp(valid_train.index[0])
-            
+
             if wfa_end_date is None:
                 wfa_end_date = last_ts.date()
             if wfa_start_date is None:
                 wfa_start_date = (first_ts + train_window).date()
-                
+
             current_date = pd.to_datetime(wfa_start_date)
             if current_date.tzinfo is None and data.index.tzinfo is not None:
                 current_date = current_date.tz_localize(data.index.tzinfo)
             end_date = pd.to_datetime(wfa_end_date)
             if end_date.tzinfo is None and data.index.tzinfo is not None:
                 end_date = end_date.tz_localize(data.index.tzinfo)
-                
+
             all_test_data = []
             all_importances = []
             y_test_all = []
             y_pred_all = []
-            
+
             total_days = max(1, (end_date - current_date).days)
             start_days = total_days
-            
+            xgb_best, lgb_best = (None, None)
+            last_fitted_m = None
+
             while current_date < end_date:
                 train_start = current_date - train_window
+                train_cutoff = current_date - embargo_offset
                 test_end = current_date + step_size
-                
-                mask_train = (valid_train.index >= train_start) & (valid_train.index < current_date)
+
+                mask_train = (valid_train.index >= train_start) & (valid_train.index < train_cutoff)
                 mask_test = (valid_train.index >= current_date) & (valid_train.index < test_end)
-                
+
                 X_tr, y_tr = X[mask_train], y[mask_train]
                 X_te, y_te_slice = X[mask_test], y[mask_test]
-                
+
                 if len(X_tr) < 50 or len(X_te) == 0 or len(np.unique(y_tr)) < 2:
                     current_date += step_size
                     continue
-                    
-                self.xgb_model = xgb.XGBClassifier(n_estimators=100, learning_rate=0.05, max_depth=5, objective='binary:logistic', random_state=42)
-                self.rf_model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
-                estimators = [('xgb', self.xgb_model), ('rf', self.rf_model)]
-                if HAS_LIGHTGBM and lgb is not None:
-                    self.lgb_model = lgb.LGBMClassifier(n_estimators=100, learning_rate=0.05, max_depth=5, random_state=42, verbose=-1)
-                    estimators.append(('lgb', self.lgb_model))
-                
-                m = VotingClassifier(
-                    estimators=estimators,
-                    voting='soft'
-                )
+
+                if optimize and xgb_best is None:
+                    xgb_best, lgb_best = self._optimize_hyperparams(X_tr, y_tr, embargo_days=embargo_days, n_trials=8)
+
+                min_cls = int(np.bincount(y_tr).min())
+                m = self._build_ensemble(xgb_best, lgb_best, calibrate=calibrate, n_samples=len(X_tr), min_class_count=min_cls)
                 m.fit(X_tr, y_tr)
-                
+                last_fitted_m = m
+
                 prob = m.predict_proba(X_te)[:, 1]
                 pred = m.predict(X_te)
-                
+
                 test_slice = valid_train[mask_test].copy()
                 test_slice['Prob'] = prob
                 all_test_data.append(test_slice)
-                
+
                 y_test_all.extend(y_te_slice.values)
                 y_pred_all.extend(pred)
-                
-                imp = np.mean([est.feature_importances_ for est in m.estimators_], axis=0)
+
+                imp = self._extract_feature_importances(m, len(features))
                 all_importances.append(imp)
-                
+
                 current_date += step_size
                 if progress_callback and start_days > 0:
                     prog = min(1.0, 1.0 - ((end_date - current_date).days / start_days))
                     progress_callback(prog)
-                    
+
             if len(all_test_data) == 0:
                 raise ValueError(
                     f"Historique insuffisant pour la fenêtre d'entraînement WFA ({wfa_train_window}). "
                     f"La période d'historique choisie ne contient pas assez d'échantillons pour constituer les sous-fenêtres. "
                     f"Veuillez choisir une période d'historique plus étendue (ex: 5y ou 10y) ou raccourcir la fenêtre WFA (ex: 2Y)."
                 )
-                
+
             final_test_data = pd.concat(all_test_data)
-            self.model = m # Modèle final le plus récent
             self.feature_importances = pd.DataFrame(
                 {'Feature': features, 'Importance': np.mean(all_importances, axis=0)}
             ).sort_values(by='Importance', ascending=True)
-            
-            final_test_data = self.run_event_driven_backtest(final_test_data)
+
+            final_test_data = self.run_event_driven_backtest(
+                final_test_data,
+                use_trailing_stop=use_trailing_stop,
+                use_regime_filters=use_regime_filters,
+                use_vol_sizing=use_vol_sizing
+            )
             self.backtest_results = final_test_data
             self.accuracy = accuracy_score(y_test_all, y_pred_all) if len(y_test_all) > 0 else 0.0
+
+            # Ré-entraînement final sur la fenêtre la plus récente jusqu'à t-1
+            recent_mask = valid_train.index >= (last_ts - train_window)
+            X_rec, y_rec = X[recent_mask], y[recent_mask]
+            if retrain_final and len(X_rec) >= 50 and len(np.unique(y_rec)) >= 2:
+                min_cls_rec = int(np.bincount(y_rec).min())
+                prod_m = self._build_ensemble(xgb_best, lgb_best, calibrate=calibrate, n_samples=len(X_rec), min_class_count=min_cls_rec)
+                prod_m.fit(X_rec, y_rec)
+                self.model = prod_m
+            else:
+                self.model = last_fitted_m
+
             self.is_trained = True
             return features
 
@@ -1216,11 +1602,9 @@ class MLTrader:
         if not self.is_trained:
             return None
         features_expected = getattr(self, 'features', features)
-        # Réalignement défensif garantissant que toutes les variables sont présentes
         X_input = last_row.reindex(columns=features_expected, fill_value=0.0)
         prob = float(self.model.predict_proba(X_input)[0][1])
-        
-        # Coupe-circuit Macro VIX > 30 en temps réel
+
         if 'VIX' in last_row.columns:
             vix_val = float(last_row['VIX'].iloc[0]) if isinstance(last_row['VIX'], pd.Series) else float(last_row['VIX'])
             if vix_val > 30:
@@ -1228,8 +1612,9 @@ class MLTrader:
         return prob
 
     def save(self, filepath):
-        """Sauvegarde l'état du modèle et ses résultats."""
+        """Sauvegarde l'état du modèle via joblib (avec horodatage pour TTL) ou pickle en repli."""
         os.makedirs(os.path.dirname(filepath), exist_ok=True) if os.path.dirname(filepath) else None
+        self.saved_at = datetime.now().isoformat()
         state = {
             'model': self.model,
             'accuracy': self.accuracy,
@@ -1238,16 +1623,27 @@ class MLTrader:
             'is_trained': self.is_trained,
             'features': getattr(self, 'features', []),
             'advanced_metrics': getattr(self, 'advanced_metrics', {}),
-            'closed_trades': getattr(self, 'closed_trades', [])
+            'closed_trades': getattr(self, 'closed_trades', []),
+            'saved_at': self.saved_at,
         }
-        with open(filepath, 'wb') as f:
-            pickle.dump(state, f)
+        if HAS_JOBLIB and joblib is not None:
+            joblib.dump(state, filepath, compress=3)
+        else:
+            with open(filepath, 'wb') as f:
+                pickle.dump(state, f)
 
     @staticmethod
     def load(filepath):
-        """Charge un modèle persisté sur le disque."""
-        with open(filepath, 'rb') as f:
-            state = pickle.load(f)
+        """Charge un modèle persisté (compatible joblib et anciens fichiers pickle)."""
+        state = None
+        if HAS_JOBLIB and joblib is not None:
+            try:
+                state = joblib.load(filepath)
+            except Exception:
+                state = None
+        if state is None:
+            with open(filepath, 'rb') as f:
+                state = pickle.load(f)
         trader = MLTrader()
         trader.model = state['model']
         trader.accuracy = state['accuracy']
@@ -1257,6 +1653,7 @@ class MLTrader:
         trader.features = state.get('features', [])
         trader.advanced_metrics = state.get('advanced_metrics', {})
         trader.closed_trades = state.get('closed_trades', [])
+        trader.saved_at = state.get('saved_at', None)
         return trader
 
 
@@ -1264,12 +1661,13 @@ class MLTrader:
 # 5. ALLOCATION BAYÉSIENNE DE BLACK-LITTERMAN
 # =============================================================================
 
-def get_black_litterman_weights(returns_df, market_weights, views_dict, tau=0.05, risk_aversion=2.5):
+def get_black_litterman_weights(returns_df, market_weights, views_dict, tau=0.05, risk_aversion=2.5, periods_per_year=None):
     """
     Calcule les poids de portefeuille optimaux par le modèle de Black-Litterman.
     returns_df : rendements historiques des actions sélectionnées
     market_weights : prior d'équilibre (ex: Parité des Risques 1/Vol)
-    views_dict : vues subjectives calibrées issues de l'IA {ticker: excess_return}
+    views_dict : vues subjectives d'excès de rendement issues de l'IA {ticker: excess_return}
+                 (ajoutées au prior d'équilibre Pi afin qu'une vue neutre 0.0 préserve Pi)
     """
     try:
         tickers = list(returns_df.columns)
@@ -1278,33 +1676,36 @@ def get_black_litterman_weights(returns_df, market_weights, views_dict, tau=0.05
             return {}
         if N == 1:
             return {tickers[0]: 1.0}
-            
-        Sigma = returns_df.cov().values * 252
+
+        ppy = float(periods_per_year) if periods_per_year is not None else _infer_periods_per_year(returns_df.index)
+        Sigma = returns_df.cov().values * ppy
         if np.isnan(Sigma).any():
             return market_weights
         # Régularisation diagonale minimale pour garantir la stricte inversibilité
         Sigma += np.eye(N) * 1e-6
-        
-        W_mkt = np.array([market_weights.get(t, 1.0/N) for t in tickers])
+
+        W_mkt = np.array([market_weights.get(t, 1.0 / N) for t in tickers])
         Pi = risk_aversion * Sigma.dot(W_mkt)
-        
+
         P = np.eye(N)
-        Q = np.array([views_dict.get(t, 0.0) for t in tickers])
-        
-        if np.all(Q == 0.0):
+        excess_views = np.array([views_dict.get(t, 0.0) for t in tickers])
+
+        if np.all(excess_views == 0.0):
             return market_weights
-            
+
+        # Correction Black-Litterman : Q est le rendement attendu absolu (Pi + excès IA)
+        Q = Pi + excess_views
         Omega = np.diag(np.diag(tau * P.dot(Sigma).dot(P.T)))
-        
+
         tau_Sigma_inv = np.linalg.pinv(tau * Sigma)
         Omega_inv = np.linalg.pinv(Omega)
-        
+
         left_term = np.linalg.pinv(tau_Sigma_inv + P.T.dot(Omega_inv).dot(P))
         right_term = tau_Sigma_inv.dot(Pi) + P.T.dot(Omega_inv).dot(Q)
-        
+
         posterior_expected_returns = left_term.dot(right_term)
         W_bl = np.linalg.pinv(risk_aversion * Sigma).dot(posterior_expected_returns)
-        
+
         # Contrainte Long-Only (pas de short)
         W_bl = np.clip(W_bl, 0.0, None)
         total_w = np.sum(W_bl)
@@ -1312,7 +1713,7 @@ def get_black_litterman_weights(returns_df, market_weights, views_dict, tau=0.05
             W_bl = W_bl / total_w
         else:
             W_bl = W_mkt
-            
+
         return {tickers[i]: float(W_bl[i]) for i in range(N)}
     except Exception as e:
         print(f"Erreur d'optimisation Black-Litterman: {e}")
@@ -1372,13 +1773,16 @@ def run_options_backtest_simulation(
     strat_action="Vendre (Short)", target_delta_abs=0.15, 
     target_dte=45, take_profit_pct=50, stop_loss_pct=200, 
     capital=100000.0, multiplier=100, bid_ask_spread=0.02, 
-    commission_per_leg=1.0, progress_callback=None
+    commission_per_leg=1.0, iv_vrp_mult=1.15, progress_callback=None
 ):
     """
-    Simulateur de stratégies d'options systématiques avec gestion réaliste des frictions.
+    Simulateur de stratégies d'options systématiques avec gestion réaliste des frictions :
+    - Volatilité strictement causale (sans bfill) + prime de risque de volatilité (VRP).
+    - Décompte réel en jours calendaires jusqu'à l'échéance (cohérent avec T = DTE / 365).
     """
     returns = closes.pct_change()
-    hist_vol = (returns.rolling(window=30).std() * np.sqrt(252)).bfill()
+    ppy = _infer_periods_per_year(closes.index)
+    hist_vol = (returns.rolling(window=30, min_periods=5).std() * np.sqrt(ppy)).fillna(0.20)
     r = 0.05
     
     cash = float(capital)
@@ -1391,7 +1795,7 @@ def run_options_backtest_simulation(
         if progress_callback and i % 25 == 0:
             progress_callback(i / total_days)
             
-        sigma = max(float(hist_vol.iloc[i]), 0.05)
+        sigma = max(float(hist_vol.iloc[i]) * float(iv_vrp_mult), 0.05)
         
         if current_position is None:
             legs = []
@@ -1445,7 +1849,14 @@ def run_options_backtest_simulation(
             equity_curve.append(cash)
         else:
             current_position['days_passed'] += 1
-            days_remaining = target_dte - current_position['days_passed']
+            entry_dt = current_position.get('entry_date')
+            if hasattr(date, 'to_pydatetime') and hasattr(entry_dt, 'to_pydatetime'):
+                elapsed_cal_days = max(1, (date - entry_dt).days)
+            elif hasattr(date - entry_dt, 'days'):
+                elapsed_cal_days = max(1, (date - entry_dt).days)
+            else:
+                elapsed_cal_days = int(round(current_position['days_passed'] * (365.0 / 252.0)))
+            days_remaining = target_dte - elapsed_cal_days
             
             if days_remaining <= 0:
                 closing_cashflow = 0.0

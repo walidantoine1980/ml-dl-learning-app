@@ -405,6 +405,135 @@ class TestQuantCore(unittest.TestCase):
             if os.path.exists(temp_path):
                 os.remove(temp_path)
 
+    def test_18_watchlist_csv_validation_and_translation(self):
+        """Vérifie la validation de conformité et la traduction des fichiers Watchlist CSV (Investing.com, Reuters, etc.)."""
+        import tempfile
+        from tickers_db import (
+            normalize_watchlist_symbol,
+            parse_and_validate_watchlist_csv,
+            save_translated_watchlist_csv,
+        )
+
+        # 1. CSV Investing.com / Reuters avec UTF-8 BOM, guillemets, virgules dans les nombres et colonnes dupliquées
+        investing_csv = (
+            '\ufeff"Name","Symbol","Exchange","Last","Vol.","Daily","Daily"\n'
+            '"Akamai Technologies Inc","AKAM.O","NASDAQ","91.70","8,568,715","Buy","8.34%"\n'
+            '"HP Inc","HPQ","NYSE","28.66","10,190,530","Sell","-0.17%"\n'
+            '"Oracle Corporation","ORCL.K","NYSE","113.89","15,394,703","Sell","-0.97%"\n'
+            '"Qnity Electronics Inc","Q","NYSE","115.82","1,873,287","Sell","1.16%"\n'
+        ).encode("utf-8")
+
+        res = parse_and_validate_watchlist_csv(investing_csv, "Tech_Investing.csv")
+        self.assertTrue(res["is_valid"], f"Le CSV Investing.com doit être valide : {res['errors']}")
+        self.assertTrue(res["needs_translation"], "Le CSV virgule avec suffixes .O/.K doit déclencher la traduction.")
+        self.assertEqual(len(res["entries"]), 4)
+        symbols = [e["symbol"] for e in res["entries"]]
+        self.assertEqual(symbols, ["AKAM", "HPQ", "ORCL", "Q"])
+        self.assertIn(("AKAM.O", "AKAM"), res["conversions"])
+        self.assertIn(("ORCL.K", "ORCL"), res["conversions"])
+        self.assertTrue(res["translated_csv"].startswith("Name;Symbol;Exchange\n"))
+
+        # Vérifier la sauvegarde traduite dans un répertoire temporaire
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ok, saved_path = save_translated_watchlist_csv(res["translated_csv"], res["clean_filename"], watchlists_dir=tmpdir)
+            self.assertTrue(ok)
+            self.assertTrue(os.path.exists(saved_path))
+            with open(saved_path, "rb") as f:
+                reloaded = parse_and_validate_watchlist_csv(f.read(), os.path.basename(saved_path))
+            self.assertTrue(reloaded["is_valid"])
+            self.assertEqual([e["symbol"] for e in reloaded["entries"]], ["AKAM", "HPQ", "ORCL", "Q"])
+
+        # 2. Traductions internationales / Google Finance / Classes d'actions
+        self.assertEqual(normalize_watchlist_symbol("EPA:MC"), "MC.PA")
+        self.assertEqual(normalize_watchlist_symbol("NESN.S"), "NESN.SW")
+        self.assertEqual(normalize_watchlist_symbol("MC", "Euronext Paris"), "MC.PA")
+        self.assertEqual(normalize_watchlist_symbol("BRK.B", "NYSE"), "BRK-B")
+
+        # 3. Liste simple de tickers (1 colonne sans en-tête)
+        simple_csv = b"AAPL\nMSFT\nNVDA\n"
+        res_simple = parse_and_validate_watchlist_csv(simple_csv, "simple.csv")
+        self.assertTrue(res_simple["is_valid"])
+        self.assertEqual([e["symbol"] for e in res_simple["entries"]], ["AAPL", "MSFT", "NVDA"])
+
+        # 4. CSV non conforme (sans colonne ticker)
+        bad_csv = b"ColA,ColB\nfoo,bar\n"
+        res_bad = parse_and_validate_watchlist_csv(bad_csv, "invalid.csv")
+        self.assertFalse(res_bad["is_valid"])
+        self.assertTrue(len(res_bad["errors"]) > 0)
+
+    def test_19_new_features_and_triple_barrier_labeling(self):
+        """Vérifie les nouvelles features stationnaires (Garman-Klass, CMF, MFI, OBV, etc.) et le Triple Barrier Labeling."""
+        df_tb = add_features(self.sample_df, labeling_mode="triple_barrier", tb_horizon=5)
+        for col in ['GK_Vol_20', 'Vol_Ratio_5_20', 'CLV', 'CMF_20', 'MFI_14', 'OBV_ZScore',
+                    'Gap_Open', 'Ret_5d', 'Ret_21d', 'Dist_High_52w', 'Price_ZScore_20',
+                    'SMA_50_Slope', 'DayOfWeek_Sin', 'TurnOfMonth']:
+            self.assertIn(col, df_tb.columns, f"Feature {col} manquante.")
+        self.assertEqual(self.sample_df.index[-1], df_tb.index[-1], "La dernière bougie t doit être conservée.")
+        self.assertTrue(np.isnan(df_tb['Target'].iloc[-1]), "Target de la dernière bougie t doit être NaN.")
+        past_targets = df_tb['Target'].iloc[:-1]
+        self.assertFalse(past_targets.isna().any(), "Toutes les cibles Triple Barrier passées doivent être définies.")
+        self.assertTrue(set(past_targets.unique()).issubset({0.0, 1.0}))
+
+    def test_20_backtest_causality_and_advanced_strategy_modes(self):
+        """Vérifie l'absence de ré-entrée le même jour, la calibration, le Trailing Stop, Vol Sizing et les métriques Tearsheet."""
+        import tempfile
+        # 1. Test déterministe : pas de ré-entrée le même jour après Stop-Loss
+        dates = pd.date_range("2025-01-01", periods=6, freq="B")
+        bt_in = pd.DataFrame({
+            'Open':  [100.0, 100.0, 100.0, 90.0, 92.0, 95.0],
+            'High':  [101.0, 101.0, 101.0, 91.0, 93.0, 96.0],
+            'Low':   [99.0,  99.0,  99.0,  85.0, 91.0, 94.0],
+            'Close': [100.0, 100.0, 100.0, 88.0, 92.0, 95.0],
+            'ATR':   [2.0,   2.0,   2.0,   2.0,  2.0,  2.0],
+            'Prob':  [0.80,  0.80,  0.80,  0.80, 0.80, 0.80],
+            'VIX':   [15.0,  15.0,  15.0,  15.0, 15.0, 15.0],
+        }, index=dates)
+        t_bt = MLTrader()
+        res_bt = t_bt.run_event_driven_backtest(bt_in, use_atr_stops=True, atr_sl_mult=1.5, atr_tp_mult=3.0)
+        # Entrée jour 1 (index 1, prix ~100.1), Stop Loss touché jour 3 (Open=90 <= SL ~97.1) -> Invested jour 3 DOIT être 0.0 (pas de ré-entrée le jour 3!)
+        self.assertEqual(res_bt['Invested'].iloc[3], 0.0, "Aucune ré-entrée ne doit avoir lieu le même jour qu'un Stop-Loss.")
+
+        # 2. Entraînement complet avec Triple Barrier, Calibration, Trailing Stop, Filtres de régime, Vol Sizing & Joblib save/load
+        df_tb = add_features(self.sample_df, labeling_mode="triple_barrier")
+        trader = MLTrader()
+        feats = trader.train(
+            df_tb, optimize=False, use_wfa=False,
+            calibrate=True, use_trailing_stop=True,
+            use_regime_filters=True, use_vol_sizing=True, retrain_final=True
+        )
+        self.assertTrue(trader.is_trained)
+        for k in ['CAGR', 'Profit Factor', 'Calmar Ratio', 'Exposure %', 'Market Sharpe Ratio', 'Sortino Ratio']:
+            self.assertIn(k, trader.advanced_metrics, f"Métrique Tearsheet {k} manquante.")
+
+        prob = trader.predict(df_tb.iloc[-1:], feats)
+        self.assertGreaterEqual(prob, 0.0)
+        self.assertLessEqual(prob, 1.0)
+
+        with tempfile.NamedTemporaryFile(suffix=".pkl", delete=False) as tf:
+            tmp_model = tf.name
+        try:
+            trader.save(tmp_model)
+            reloaded = MLTrader.load(tmp_model)
+            self.assertIsNotNone(reloaded.saved_at)
+            self.assertEqual(reloaded.features, trader.features)
+            prob2 = reloaded.predict(df_tb.iloc[-1:], feats)
+            self.assertAlmostEqual(prob, prob2, places=6)
+        finally:
+            if os.path.exists(tmp_model):
+                os.remove(tmp_model)
+
+    def test_21_black_litterman_neutral_views_and_weekly_annualization(self):
+        """Vérifie que Black-Litterman préserve l'équilibre sur vue neutre et gère l'annualisation hebdomadaire."""
+        tickers = ['AAPL', 'MSFT', 'GOOGL']
+        np.random.seed(7)
+        dates_wk = pd.date_range("2022-01-07", periods=100, freq="W-FRI")
+        rets_df = pd.DataFrame(np.random.normal(0.002, 0.03, size=(100, 3)), index=dates_wk, columns=tickers)
+        market_weights = {'AAPL': 0.30, 'MSFT': 0.40, 'GOOGL': 0.30}
+        # Vue positive uniquement sur AAPL, neutre (0.0) sur les autres -> AAPL doit augmenter vs son prior
+        bl_w = get_black_litterman_weights(rets_df, market_weights, {'AAPL': 0.08, 'MSFT': 0.0, 'GOOGL': 0.0})
+        self.assertAlmostEqual(sum(bl_w.values()), 1.0, places=4)
+        self.assertGreater(bl_w['AAPL'], market_weights['AAPL'], "Une vue positive sur AAPL doit augmenter son poids par rapport au prior.")
+
 
 if __name__ == "__main__":
     unittest.main()

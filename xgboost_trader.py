@@ -33,7 +33,12 @@ try:
 except ImportError:
     shap = None
     HAS_SHAP = False
-from tickers_db import MAJOR_STOCKS, PREDEFINED_PORTFOLIOS
+from tickers_db import (
+    MAJOR_STOCKS,
+    PREDEFINED_PORTFOLIOS,
+    parse_and_validate_watchlist_csv,
+    save_translated_watchlist_csv,
+)
 import glob
 
 # Import du moteur quantitatif centralisé
@@ -53,6 +58,14 @@ from academy_core import (
     render_advanced_academy,
     render_options_academy,
     render_news_academy
+)
+from auto_trader_engine import (
+    AutoTraderConfig,
+    get_global_auto_trader,
+    list_watchlist_csv_files,
+    load_tickers_from_csv_files,
+    load_auto_trader_config,
+    save_auto_trader_config,
 )
 # Le chargement des portefeuilles personnalisés est maintenant géré dynamiquement par tickers_db.py
 
@@ -186,9 +199,15 @@ st.markdown("""
 
 # --- MODES D'AFFICHAGE ---
 
-def run_single_mode(ticker, period, interval, initial_capital, optimize_model, use_wfa=False, wfa_train_window="5Y", wfa_step="6M", wfa_start_date=None, wfa_end_date=None):
+def run_single_mode(ticker, period, interval, initial_capital, optimize_model, use_wfa=False, wfa_train_window="5Y", wfa_step="6M", wfa_start_date=None, wfa_end_date=None, strategy_cfg=None):
     st.subheader(f"Analyse Individuelle : {get_company_name_from_yahoo(ticker)}")
     model_path = f"models/{ticker}_model.pkl"
+    scfg = strategy_cfg or {}
+    labeling_mode = scfg.get("labeling_mode", "triple_barrier")
+    calibrate_probs = scfg.get("calibrate_probs", True)
+    use_trailing_stop = scfg.get("use_trailing_stop", True)
+    use_regime_filters = scfg.get("use_regime_filters", True)
+    use_vol_sizing = scfg.get("use_vol_sizing", False)
     
     if f"trader_{ticker}" not in st.session_state:
         st.session_state[f"trader_{ticker}"] = MLTrader()
@@ -207,7 +226,7 @@ def run_single_mode(ticker, period, interval, initial_capital, optimize_model, u
             
         macro_df = get_macro_data(period, interval)
 
-    df = add_features(df_raw)
+    df = add_features(df_raw, labeling_mode=labeling_mode)
     if macro_df is not None:
         df = join_macro_data(df, macro_df)
     
@@ -217,8 +236,22 @@ def run_single_mode(ticker, period, interval, initial_capital, optimize_model, u
         if st.button("🧠 Entraîner l'IA sur cette action", use_container_width=True):
             with st.status("Entraînement en cours...") as status:
                 try:
-                    features = trader.train(df, optimize=optimize_model, use_wfa=use_wfa, wfa_train_window=wfa_train_window, wfa_step=wfa_step, wfa_start_date=wfa_start_date, wfa_end_date=wfa_end_date)
+                    features = trader.train(
+                        df, optimize=optimize_model, use_wfa=use_wfa,
+                        wfa_train_window=wfa_train_window, wfa_step=wfa_step,
+                        wfa_start_date=wfa_start_date, wfa_end_date=wfa_end_date,
+                        calibrate=calibrate_probs,
+                        use_trailing_stop=use_trailing_stop,
+                        use_regime_filters=use_regime_filters,
+                        use_vol_sizing=use_vol_sizing
+                    )
                     st.session_state[f"features_{ticker}"] = features
+                    try:
+                        os.makedirs("models", exist_ok=True)
+                        trader.save(model_path)
+                        get_global_auto_trader().register_models({ticker: trader})
+                    except Exception:
+                        pass
                     status.update(label="✅ Modèle entraîné !", state="complete")
                 except ValueError as ve:
                     status.update(label="❌ Erreur de paramétrage WFA", state="error")
@@ -695,6 +728,14 @@ def run_single_mode(ticker, period, interval, initial_capital, optimize_model, u
                 m5.metric("Alpha", f"{diff_profit:,.2f} $", delta="Marché bat l'IA", delta_color="inverse")
                 
             st.divider()
+            t1, t2, t3, t4, t5 = st.columns(5)
+            t1.metric("CAGR", f"{adv.get('CAGR', 0)*100:.2f}%", help="Taux de croissance annuel composé de la stratégie.")
+            t2.metric("Profit Factor", f"{adv.get('Profit Factor', 0):.2f}", help="Ratio Gains bruts / Pertes brutes (> 1.5 recommandé).")
+            t3.metric("Calmar Ratio", f"{adv.get('Calmar Ratio', 0):.2f}", help="CAGR / |Max Drawdown|.")
+            t4.metric("Exposition", f"{adv.get('Exposure %', 0)*100:.1f}%", help="Pourcentage du temps passé investi sur le marché.")
+            t5.metric("Sharpe Buy & Hold", f"{adv.get('Market Sharpe Ratio', 0):.2f}", help="Sharpe du marché sur la même période de test.")
+
+            st.divider()
             n1, n2, n3 = st.columns(3)
             var_pct = adv.get('VaR (95%)', 0) * 100
             cvar_pct = adv.get('CVaR', 0) * 100
@@ -755,10 +796,16 @@ def run_single_mode(ticker, period, interval, initial_capital, optimize_model, u
                 st.info("Le package `shap` n'est pas installé dans cet environnement. Exécutez `pip install shap` pour afficher les explications SHAP.")
             else:
                 try:
-                    # Dans un VotingClassifier, les modèles entraînés sont dans estimators_
-                    fitted_xgb = trader.model.estimators_[0]
+                    # Extraction robuste du modèle XGBoost (VotingClassifier ou CalibratedClassifierCV)
+                    if hasattr(trader.model, "estimators_"):
+                        fitted_xgb = trader.model.estimators_[0]
+                    elif hasattr(trader.model, "calibrated_classifiers_"):
+                        fitted_xgb = trader.model.calibrated_classifiers_[0].estimator.estimators_[0]
+                    else:
+                        fitted_xgb = trader.xgb_model
                     explainer = shap.TreeExplainer(fitted_xgb)
-                    shap_values = explainer.shap_values(last_row[features])
+                    shap_features = getattr(trader, "features", features)
+                    shap_values = explainer.shap_values(last_row.reindex(columns=shap_features, fill_value=0.0))
                     
                     if isinstance(shap_values, list):
                         sv = shap_values[1][0]
@@ -767,7 +814,7 @@ def run_single_mode(ticker, period, interval, initial_capital, optimize_model, u
                     else:
                         sv = shap_values
                     
-                    shap_df = pd.DataFrame({'Feature': features, 'Contribution': sv})
+                    shap_df = pd.DataFrame({'Feature': shap_features, 'Contribution': sv})
                     shap_df = shap_df.sort_values(by='Contribution', key=abs, ascending=True).tail(10)
                     
                     fig_shap = go.Figure(go.Waterfall(
@@ -804,7 +851,13 @@ def run_single_mode(ticker, period, interval, initial_capital, optimize_model, u
 
 # get_black_litterman_weights est importé de quant_core.py
 
-def run_portfolio_mode(tickers, period, interval, initial_capital, optimize_model, use_wfa=False, wfa_train_window="5Y", wfa_step="6M", wfa_start_date=None, wfa_end_date=None):
+def run_portfolio_mode(tickers, period, interval, initial_capital, optimize_model, use_wfa=False, wfa_train_window="5Y", wfa_step="6M", wfa_start_date=None, wfa_end_date=None, strategy_cfg=None):
+    scfg = strategy_cfg or {}
+    labeling_mode = scfg.get("labeling_mode", "triple_barrier")
+    calibrate_probs = scfg.get("calibrate_probs", True)
+    use_trailing_stop = scfg.get("use_trailing_stop", True)
+    use_regime_filters = scfg.get("use_regime_filters", True)
+    use_vol_sizing = scfg.get("use_vol_sizing", False)
     st.subheader("🌐 Mode Portefeuille Institutionnel (Black-Litterman)")
     st.markdown("""
     Ce mode combine **deux piliers de la finance quantitative** :
@@ -847,21 +900,41 @@ def run_portfolio_mode(tickers, period, interval, initial_capital, optimize_mode
             market_weights = {t: (1/v)/sum_inv_vol for t, v in volatility_dict.items()}
             
             # --- 2. Entraînement IA & Génération des Vues ---
+            macro_df = get_macro_data(period, interval)
             views_dict = {}
             for t, df_raw in data_dict.items():
                 st.write(f"Entraînement de l'IA pour {t}...")
-                macro_df = get_macro_data(period, interval)
-                df = add_features(df_raw)
+                df = add_features(df_raw, labeling_mode=labeling_mode)
                 if macro_df is not None:
                     df = join_macro_data(df, macro_df)
                 trader = MLTrader()
                 try:
-                    features = trader.train(df, optimize=optimize_model, use_wfa=use_wfa, wfa_train_window=wfa_train_window, wfa_step=wfa_step, wfa_start_date=wfa_start_date, wfa_end_date=wfa_end_date)
+                    features = trader.train(
+                        df, optimize=optimize_model, use_wfa=use_wfa,
+                        wfa_train_window=wfa_train_window, wfa_step=wfa_step,
+                        wfa_start_date=wfa_start_date, wfa_end_date=wfa_end_date,
+                        calibrate=calibrate_probs,
+                        use_trailing_stop=use_trailing_stop,
+                        use_regime_filters=use_regime_filters,
+                        use_vol_sizing=use_vol_sizing
+                    )
                 except ValueError as ve:
                     st.warning(f"⚠️ {t} : {ve}")
                     # Repli sur entraînement standard
-                    features = trader.train(df, optimize=optimize_model, use_wfa=False)
+                    features = trader.train(
+                        df, optimize=optimize_model, use_wfa=False,
+                        calibrate=calibrate_probs,
+                        use_trailing_stop=use_trailing_stop,
+                        use_regime_filters=use_regime_filters,
+                        use_vol_sizing=use_vol_sizing
+                    )
                 st.session_state[f"port_trader_{t}"] = trader
+                try:
+                    os.makedirs("models", exist_ok=True)
+                    trader.save(f"models/{t}_model.pkl")
+                    get_global_auto_trader().register_models({t: trader})
+                except Exception:
+                    pass
                 
                 # Prédiction actuelle pour le Black-Litterman (La Vue)
                 last_row = df.iloc[-1:]
@@ -877,10 +950,11 @@ def run_portfolio_mode(tickers, period, interval, initial_capital, optimize_mode
                 
             # --- 3. Optimisation Black-Litterman ---
             st.write("🧮 Optimisation de la Matrice de Covariance (Black-Litterman)...")
-            returns_df = pd.DataFrame(returns_dict).ffill().bfill().fillna(0.0)
+            returns_df = pd.DataFrame(returns_dict).dropna(how='all').fillna(0.0)
             
-            # Application du modèle
-            bl_weights = get_black_litterman_weights(returns_df, market_weights, views_dict)
+            # Application du modèle (annualisation adaptée à l'intervalle)
+            ppy = 52 if interval == "1wk" else 252
+            bl_weights = get_black_litterman_weights(returns_df, market_weights, views_dict, periods_per_year=ppy)
             
             st.session_state["bl_weights"] = bl_weights
             st.session_state["market_weights"] = market_weights
@@ -1939,24 +2013,55 @@ def page_bot_config():
         }
         
     st.header("1. Cibles d'Analyse Nocturne")
-    
+    _sync_custom_watchlists_state()
+    pending_bot_pf = st.session_state.pop("pending_pf_bot", None)
+    if pending_bot_pf and pending_bot_pf in PREDEFINED_PORTFOLIOS:
+        st.session_state["pf_select_bot"] = pending_bot_pf
+
+    col_bot_pf, col_bot_btn = st.columns([6, 1])
+    with col_bot_pf:
+        st.markdown("**💡 Sélection rapide de portefeuille**")
+    with col_bot_btn:
+        if st.button("📂", key="btn_import_csv_bot", help="Importer des watchlists CSV depuis un répertoire"):
+            if _HAS_ST_DIALOG:
+                _watchlist_import_modal("bot")
+            else:
+                st.session_state["wl_fallback_open_bot"] = not st.session_state.get("wl_fallback_open_bot", False)
+
+    if not _HAS_ST_DIALOG and st.session_state.get("wl_fallback_open_bot", False):
+        with st.expander("📂 Importer des Watchlists CSV", expanded=True):
+            _render_watchlist_import_body("bot")
+
     portfolio_choice = st.selectbox(
         "💡 Sélection rapide de portefeuille",
         options=list(PREDEFINED_PORTFOLIOS.keys()),
-        index=0
+        index=0,
+        key="pf_select_bot",
+        label_visibility="collapsed"
     )
-    
+
+    last_bot_pf = st.session_state.get("last_pf_bot")
+    if last_bot_pf is not None and last_bot_pf != portfolio_choice:
+        st.session_state["wl_complement_bot"] = []
+    st.session_state["last_pf_bot"] = portfolio_choice
+
     if portfolio_choice != "Sélection Manuelle":
-        default_selection = PREDEFINED_PORTFOLIOS[portfolio_choice]
+        default_selection = list(PREDEFINED_PORTFOLIOS[portfolio_choice])
     else:
-        default_selection = config.get("tickers", ["Apple Inc. (US)"])
-        
+        default_selection = list(config.get("tickers", ["Apple Inc. (US)"]))
+
+    for extra_s in st.session_state.get("wl_complement_bot", []):
+        if extra_s not in default_selection:
+            default_selection.append(extra_s)
+
     valid_defaults = [s for s in default_selection if s in MAJOR_STOCKS.keys()]
-    
+    bot_wl_ver = st.session_state.get("wl_version_bot", 0)
+
     stock_choices = st.multiselect(
         "Rechercher une ou plusieurs actions",
         options=list(MAJOR_STOCKS.keys())[1:],
-        default=valid_defaults
+        default=valid_defaults,
+        key=f"bot_stocks_ms_{portfolio_choice}_{bot_wl_ver}"
     )
     
     selected_tickers = []
@@ -2236,6 +2341,763 @@ def page_options_backtester(tickers):
             except Exception as e:
                 st.error(f"Erreur durant la simulation : {e}")
 
+# =============================================================================
+# MODULE : MODE TRADING AUTOMATIQUE EN BOUCLE (AUTOPILOT)
+# =============================================================================
+def page_auto_trading(sidebar_tickers=None, sidebar_csv_files=None):
+    st.title("⚡ Mode Trading Automatique (Autopilot)")
+    st.markdown(
+        """
+        Pilotez ici le **cycle complet de trading autonome** sans modifier les stratégies existantes :
+        1. **Sélectionnez un ou plusieurs fichiers CSV de trackers** (`WatchList/` ou import externe).
+        2. **Lancez l'apprentissage** (mode **WFA** ou **Standard**, Optuna, Triple Barrier — identique au Terminal).
+        3. **Actionnez le Mode Automatique** : l'application sélectionne les meilleures actions à acheter,
+           surveille la rentabilité (Take-Profit, Stop-Loss, Trailing Stop ATR, Breakeven +1R, signal IA),
+           vend automatiquement, puis réinvestit en boucle jusqu'à votre interruption.
+        """
+    )
+
+    engine = get_global_auto_trader()
+    saved_cfg = load_auto_trader_config()
+    status = engine.get_status()
+
+    # =========================================================================
+    # ÉTAPE 1 : SÉLECTION MULTIPLE DES FICHIERS CSV DE TRACKERS
+    # =========================================================================
+    st.header("1. 📂 Sélection Multiple des Fichiers CSV de Trackers")
+
+    available_csvs = list_watchlist_csv_files()
+    default_csvs = [f for f in (sidebar_csv_files or saved_cfg.csv_sources or []) if f in available_csvs]
+
+    col_csv_left, col_csv_right = st.columns([3, 2])
+    with col_csv_left:
+        selected_csv_files = st.multiselect(
+            "Choisir un ou plusieurs fichiers CSV dans WatchList/",
+            options=available_csvs,
+            default=default_csvs,
+            key="auto_csv_multiselect",
+            help="Tous les tickers des fichiers CSV sélectionnés sont automatiquement fusionnés et dédupliqués.",
+        )
+
+    with col_csv_right:
+        uploaded_auto_csvs = st.file_uploader(
+            "Ou importer d'autres fichiers CSV externes",
+            type=["csv"],
+            accept_multiple_files=True,
+            key="auto_csv_uploader",
+        )
+        save_uploaded_to_disk = st.checkbox(
+            "Enregistrer les CSV importés dans WatchList/",
+            value=True,
+            key="auto_csv_save_disk",
+        )
+
+    merged_entries = []
+    seen_syms = set()
+
+    # 1a. Chargement depuis les CSV sélectionnés dans WatchList/
+    if selected_csv_files:
+        loaded_bundle = load_tickers_from_csv_files(selected_csv_files)
+        for e in loaded_bundle["entries"]:
+            if e["symbol"] not in seen_syms:
+                seen_syms.add(e["symbol"])
+                merged_entries.append(e)
+        if loaded_bundle["errors"]:
+            for err in loaded_bundle["errors"]:
+                st.warning(f"⚠️ {err}")
+
+    # 1b. Chargement depuis les CSV uploadés à la volée
+    uploaded_names = []
+    if uploaded_auto_csvs:
+        for up in uploaded_auto_csvs:
+            res = parse_and_validate_watchlist_csv(up, up.name)
+            if res["is_valid"]:
+                uploaded_names.append(up.name)
+                if save_uploaded_to_disk:
+                    save_translated_watchlist_csv(res["translated_csv"], res["clean_filename"])
+                for item in res["entries"]:
+                    sym = convert_google_to_yahoo_ticker(item["symbol"])
+                    if sym and sym not in seen_syms:
+                        seen_syms.add(sym)
+                        merged_entries.append({
+                            "symbol": sym,
+                            "name": item.get("name", sym),
+                            "display_name": item.get("display_name", sym),
+                            "exchange": item.get("exchange", ""),
+                            "source_file": up.name,
+                        })
+            else:
+                st.error(f"❌ {up.name} : {' ; '.join(res.get('errors', ['Format invalide']))}")
+
+    # 1c. Complément optionnel avec les tickers déjà choisis dans la barre latérale
+    include_sidebar = st.checkbox(
+        f"Inclure également les tickers du menu latéral ({len(sidebar_tickers or [])} titre(s))",
+        value=(len(merged_entries) == 0 and bool(sidebar_tickers)),
+        key="auto_include_sidebar_tickers",
+    )
+    if include_sidebar and sidebar_tickers:
+        for t in sidebar_tickers:
+            sym = convert_google_to_yahoo_ticker(t)
+            if sym and sym not in seen_syms:
+                seen_syms.add(sym)
+                merged_entries.append({
+                    "symbol": sym,
+                    "name": get_company_name_from_yahoo(sym),
+                    "display_name": f"{get_company_name_from_yahoo(sym)} ({sym})",
+                    "exchange": "",
+                    "source_file": "Menu latéral",
+                })
+
+    universe_symbols = [e["symbol"] for e in merged_entries]
+    all_csv_sources = list(selected_csv_files) + uploaded_names
+
+    c_stat1, c_stat2, c_stat3 = st.columns(3)
+    c_stat1.metric("Fichiers CSV sélectionnés", len(all_csv_sources))
+    c_stat2.metric("Trackers uniques fusionnés", len(universe_symbols))
+
+    # Détecter combien de modèles sont déjà entraînés (en mémoire ou sur disque)
+    ready_symbols = []
+    for sym in universe_symbols:
+        in_mem = sym in status.get("trained_symbols", [])
+        in_ss = (
+            (f"trader_{sym}" in st.session_state and getattr(st.session_state[f"trader_{sym}"], "is_trained", False))
+            or (f"port_trader_{sym}" in st.session_state and getattr(st.session_state[f"port_trader_{sym}"], "is_trained", False))
+            or (f"auto_trader_model_{sym}" in st.session_state and getattr(st.session_state[f"auto_trader_model_{sym}"], "is_trained", False))
+        )
+        on_disk = os.path.exists(os.path.join("models", f"{sym}_model.pkl"))
+        if in_mem or in_ss or on_disk:
+            ready_symbols.append(sym)
+    c_stat3.metric("Modèles entraînés prêts", f"{len(ready_symbols)} / {len(universe_symbols)}")
+
+    if merged_entries:
+        with st.expander(f"👁️ Aperçu des {len(merged_entries)} trackers sélectionnés", expanded=False):
+            st.dataframe(
+                pd.DataFrame(merged_entries)[["symbol", "name", "exchange", "source_file"]].rename(
+                    columns={"symbol": "Symbole Yahoo", "name": "Nom", "exchange": "Bourse", "source_file": "Fichier CSV"}
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+    else:
+        st.info("👆 Sélectionnez un ou plusieurs fichiers CSV de trackers ci-dessus pour constituer votre univers d'apprentissage et de trading automatique.")
+
+    st.divider()
+
+    # =========================================================================
+    # ÉTAPE 2 : APPRENTISSAGE (IDENTIQUE AU TERMINAL — WFA OU STANDARD)
+    # =========================================================================
+    st.header("2. 🧠 Apprentissage des Modèles (WFA ou Standard)")
+    st.caption("Le moteur d'apprentissage et les stratégies (`quant_core.py`) restent strictement identiques.")
+
+    col_l1, col_l2, col_l3, col_l4 = st.columns(4)
+    auto_period = col_l1.selectbox("Période d'historique", ["2y", "5y", "10y", "max"], index=1, key="auto_period")
+    auto_interval = col_l2.selectbox("Intervalle", ["1d", "1wk"], index=0, key="auto_interval")
+    auto_learning_mode = col_l3.selectbox(
+        "Mode d'apprentissage",
+        ["Standard (Train/Test)", "Walk-Forward Analysis (WFA)"],
+        index=0,
+        key="auto_learning_mode",
+    )
+    auto_optimize = col_l4.checkbox("🧠 Auto-Optimisation (Optuna)", value=False, key="auto_optimize")
+
+    auto_use_wfa = auto_learning_mode.startswith("Walk-Forward")
+    auto_wfa_window = "5Y"
+    auto_wfa_step = "6M"
+    auto_wfa_start = None
+    auto_wfa_end = None
+
+    if auto_use_wfa:
+        wc1, wc2, wc3, wc4 = st.columns(4)
+        auto_wfa_window = wc1.selectbox("Fenêtre WFA", ["2Y", "5Y", "7Y"], index=1, key="auto_wfa_window")
+        auto_wfa_step = wc2.selectbox("Pas d'avancement WFA", ["1M", "2M", "6M", "1Y"], index=2, key="auto_wfa_step")
+        win_offsets = {"2Y": pd.DateOffset(years=2), "5Y": pd.DateOffset(years=5), "7Y": pd.DateOffset(years=7)}
+        default_end = datetime.now().date()
+        default_start = (pd.Timestamp(default_end) - win_offsets[auto_wfa_window]).date()
+        auto_wfa_start = wc3.date_input("WFA Début", value=default_start, key=f"auto_wfa_start_{auto_wfa_window}")
+        auto_wfa_end = wc4.date_input("WFA Fin", value=default_end, key="auto_wfa_end")
+
+    with st.expander("⚙️ Options Stratégie d'Apprentissage (Identiques au Terminal)", expanded=False):
+        sc1, sc2, sc3, sc4, sc5 = st.columns(5)
+        auto_lbl = sc1.selectbox("Cible ML", ["Triple Barrier (ATR 5j)", "Classique (J+1)"], index=0, key="auto_lbl")
+        auto_cal = sc2.checkbox("Calibration Probs", value=True, key="auto_cal")
+        auto_tsl_train = sc3.checkbox("Trailing Stop Backtest", value=True, key="auto_tsl_train")
+        auto_reg_train = sc4.checkbox("Filtres SMA200 & RSI", value=True, key="auto_reg_train")
+        auto_vol_train = sc5.checkbox("Vol Sizing ATR", value=False, key="auto_vol_train")
+
+    auto_labeling_mode = "triple_barrier" if auto_lbl.startswith("Triple") else "next_day"
+
+    col_tr_btn1, col_tr_btn2 = st.columns([3, 1])
+    with col_tr_btn1:
+        launch_training = st.button(
+            f"🧠 Lancer l'Apprentissage ({auto_learning_mode}) sur {len(universe_symbols)} tracker(s)",
+            type="primary",
+            use_container_width=True,
+            disabled=(len(universe_symbols) == 0 or status["is_running"]),
+            key="btn_auto_train_all",
+        )
+    with col_tr_btn2:
+        skip_already_trained = st.checkbox(
+            "Ignorer modèles déjà sur disque",
+            value=False,
+            key="auto_skip_existing",
+            help="Si coché, réutilise les modèles déjà sauvegardés dans models/ sans les ré-entraîner.",
+        )
+
+    if launch_training and universe_symbols:
+        os.makedirs("models", exist_ok=True)
+        trained_summary = []
+        newly_trained = {}
+        progress_bar = st.progress(0.0, text="Initialisation de l'apprentissage...")
+        macro_df = get_macro_data(auto_period, auto_interval)
+
+        for idx, sym in enumerate(universe_symbols):
+            progress_bar.progress(
+                idx / max(len(universe_symbols), 1),
+                text=f"Apprentissage {idx + 1}/{len(universe_symbols)} : {sym} ({auto_learning_mode})...",
+            )
+            model_path = os.path.join("models", f"{sym}_model.pkl")
+
+            if skip_already_trained and os.path.exists(model_path):
+                try:
+                    loaded_m = MLTrader.load(model_path)
+                    if loaded_m and getattr(loaded_m, "is_trained", False):
+                        st.session_state[f"auto_trader_model_{sym}"] = loaded_m
+                        newly_trained[sym] = loaded_m
+                        trained_summary.append({
+                            "Symbole": sym,
+                            "Nom": get_company_name_from_yahoo(sym),
+                            "Mode": "Chargé (disque)",
+                            "Précision": f"{loaded_m.accuracy:.1%}",
+                            "Sharpe": round(float(loaded_m.advanced_metrics.get("Sharpe Ratio", 0.0) or 0.0), 2),
+                            "Profit Factor": round(float(loaded_m.advanced_metrics.get("Profit Factor", 0.0) or 0.0), 2),
+                            "Statut": "✅ Prêt",
+                        })
+                        continue
+                except Exception:
+                    pass
+
+            try:
+                df_raw = yf.download(sym, period=auto_period, interval=auto_interval, progress=False)
+                if df_raw is None or df_raw.empty or len(df_raw) < 60:
+                    trained_summary.append({
+                        "Symbole": sym, "Nom": get_company_name_from_yahoo(sym),
+                        "Mode": auto_learning_mode, "Précision": "-", "Sharpe": "-", "Profit Factor": "-",
+                        "Statut": "⚠️ Données insuffisantes",
+                    })
+                    continue
+
+                if isinstance(df_raw.columns, pd.MultiIndex):
+                    df_raw.columns = df_raw.columns.droplevel(1)
+                df_raw = df_raw.loc[:, ~df_raw.columns.duplicated()].copy()
+
+                df = add_features(df_raw, labeling_mode=auto_labeling_mode)
+                if macro_df is not None:
+                    df = join_macro_data(df, macro_df)
+
+                trader = MLTrader()
+                mode_used = auto_learning_mode
+                try:
+                    features = trader.train(
+                        df,
+                        optimize=auto_optimize,
+                        use_wfa=auto_use_wfa,
+                        wfa_train_window=auto_wfa_window,
+                        wfa_step=auto_wfa_step,
+                        wfa_start_date=auto_wfa_start,
+                        wfa_end_date=auto_wfa_end,
+                        calibrate=auto_cal,
+                        use_trailing_stop=auto_tsl_train,
+                        use_regime_filters=auto_reg_train,
+                        use_vol_sizing=auto_vol_train,
+                    )
+                except ValueError:
+                    mode_used = "Standard (repli WFA)"
+                    features = trader.train(
+                        df,
+                        optimize=auto_optimize,
+                        use_wfa=False,
+                        calibrate=auto_cal,
+                        use_trailing_stop=auto_tsl_train,
+                        use_regime_filters=auto_reg_train,
+                        use_vol_sizing=auto_vol_train,
+                    )
+
+                trader.save(model_path)
+                st.session_state[f"auto_trader_model_{sym}"] = trader
+                newly_trained[sym] = trader
+
+                last_prob = trader.predict(df.iloc[-1:], features)
+                trained_summary.append({
+                    "Symbole": sym,
+                    "Nom": get_company_name_from_yahoo(sym),
+                    "Mode": mode_used,
+                    "Précision": f"{trader.accuracy:.1%}",
+                    "Sharpe": round(float(trader.advanced_metrics.get("Sharpe Ratio", 0.0) or 0.0), 2),
+                    "Profit Factor": round(float(trader.advanced_metrics.get("Profit Factor", 0.0) or 0.0), 2),
+                    "Prob. Achat": f"{last_prob*100:.1f}%" if last_prob is not None else "-",
+                    "Statut": "✅ Entraîné",
+                })
+            except Exception as ex:
+                trained_summary.append({
+                    "Symbole": sym, "Nom": get_company_name_from_yahoo(sym),
+                    "Mode": auto_learning_mode, "Précision": "-", "Sharpe": "-", "Profit Factor": "-",
+                    "Statut": f"❌ Erreur ({str(ex)[:40]})",
+                })
+
+        progress_bar.progress(1.0, text="✅ Apprentissage terminé !")
+        if newly_trained:
+            engine.register_models(newly_trained)
+            st.session_state["auto_training_summary"] = trained_summary
+            st.success(f"✅ {len(newly_trained)}/{len(universe_symbols)} modèle(s) entraîné(s) et prêt(s) pour le Mode Automatique !")
+            ready_symbols = sorted(set(ready_symbols).union(newly_trained.keys()))
+        else:
+            st.error("Aucun modèle n'a pu être entraîné. Vérifiez votre connexion ou les tickers sélectionnés.")
+
+    if st.session_state.get("auto_training_summary"):
+        with st.expander("📊 Résultats du dernier apprentissage", expanded=True):
+            st.dataframe(pd.DataFrame(st.session_state["auto_training_summary"]), use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    # =========================================================================
+    # ÉTAPE 3 : PILOTAGE DU MODE AUTOMATIQUE EN BOUCLE + COMMANDES EXPERT
+    # =========================================================================
+    st.header("3. ⚡ Pilotage du Mode Automatique en Boucle")
+
+    # Synchroniser les modèles de la session Streamlit vers le moteur
+    session_models = {}
+    for sym in universe_symbols:
+        for prefix in ("auto_trader_model_", "port_trader_", "trader_"):
+            m = st.session_state.get(f"{prefix}{sym}")
+            if m is not None and getattr(m, "is_trained", False):
+                session_models[sym] = m
+                break
+    if session_models:
+        engine.register_models(session_models)
+
+    # Panneau des paramètres Expert
+    with st.expander("🎛️ Commandes Expert (Rentabilité, Risque & Protections)", expanded=not status["is_running"]):
+        p1, p2, p3, p4 = st.columns(4)
+        scan_interval_sec = p1.number_input(
+            "Intervalle de boucle (sec)", min_value=10, max_value=86400,
+            value=int(saved_cfg.scan_interval_sec), step=10, key="auto_cfg_interval",
+            help="Délai entre deux cycles complets (Vente -> Sélection -> Achat).",
+        )
+        max_open_positions = p2.number_input(
+            "Positions max simultanées", min_value=1, max_value=30,
+            value=int(saved_cfg.max_open_positions), step=1, key="auto_cfg_max_pos",
+        )
+        position_size_pct = p3.slider(
+            "Allocation par position (%)", min_value=2.0, max_value=50.0,
+            value=float(saved_cfg.position_size_pct), step=1.0, key="auto_cfg_pos_size",
+        )
+        min_cash_reserve_pct = p4.slider(
+            "Réserve Cash minimale (%)", min_value=0.0, max_value=50.0,
+            value=float(saved_cfg.min_cash_reserve_pct), step=5.0, key="auto_cfg_cash_res",
+        )
+
+        r1, r2, r3, r4 = st.columns(4)
+        min_buy_prob_pct = r1.slider(
+            "Seuil Conviction IA Achat (%)", min_value=50, max_value=85,
+            value=int(round(saved_cfg.min_buy_prob * 100)), step=1, key="auto_cfg_buy_prob",
+        )
+        sell_prob_pct = r2.slider(
+            "Seuil Signal IA Vente (%)", min_value=20, max_value=50,
+            value=int(round(saved_cfg.sell_prob_threshold * 100)), step=1, key="auto_cfg_sell_prob",
+        )
+        take_profit_pct = r3.number_input(
+            "Take-Profit Rentabilité (%)", min_value=0.0, max_value=100.0,
+            value=float(saved_cfg.take_profit_pct), step=0.5, key="auto_cfg_tp_pct",
+            help="Vente automatique dès que le gain atteint ce % (0 = uniquement TP ATR).",
+        )
+        stop_loss_pct = r4.number_input(
+            "Stop-Loss Max Perte (%)", min_value=0.0, max_value=50.0,
+            value=float(saved_cfg.stop_loss_pct), step=0.5, key="auto_cfg_sl_pct",
+            help="Vente automatique de protection si la perte atteint ce % (0 = uniquement SL ATR).",
+        )
+
+        s1, s2, s3, s4 = st.columns(4)
+        use_atr_stops = s1.checkbox("Stops ATR Dynamiques", value=bool(saved_cfg.use_atr_stops), key="auto_cfg_atr")
+        use_trailing_stop = s2.checkbox("Trailing Stop ATR", value=bool(saved_cfg.use_trailing_stop), key="auto_cfg_tsl")
+        use_breakeven_stop = s3.checkbox("Breakeven Auto (+1R)", value=bool(saved_cfg.use_breakeven_stop), key="auto_cfg_be")
+        trailing_atr_mult = s4.number_input(
+            "Multiplicateur Trailing ATR", min_value=0.5, max_value=5.0,
+            value=float(saved_cfg.trailing_atr_mult), step=0.25, key="auto_cfg_tsl_mult",
+        )
+
+        g1, g2, g3, g4, g5 = st.columns(5)
+        use_vix_breaker = g1.checkbox("Coupe-circuit VIX", value=bool(saved_cfg.use_vix_breaker), key="auto_cfg_vix")
+        vix_max_threshold = g2.number_input("Seuil VIX Max", min_value=15.0, max_value=60.0, value=float(saved_cfg.vix_max_threshold), step=1.0, key="auto_cfg_vix_val")
+        use_rsi_shield = g3.checkbox("Bouclier RSI (>75)", value=bool(saved_cfg.use_rsi_shield), key="auto_cfg_rsi")
+        use_sma200_filter = g4.checkbox("Filtre Tendance SMA200", value=bool(saved_cfg.use_sma200_filter), key="auto_cfg_sma200")
+        dry_run = g5.checkbox("🧪 Mode Dry-Run (Simulation)", value=bool(saved_cfg.dry_run), key="auto_cfg_dry_run", help="Enregistre les ordres sans modifier portfolio.json.")
+
+        x1, x2 = st.columns(2)
+        max_drawdown_pct = x1.slider(
+            "Coupe-circuit Drawdown Max (%)", min_value=2.0, max_value=50.0,
+            value=float(saved_cfg.max_drawdown_pct), step=1.0, key="auto_cfg_dd",
+            help="Bloque automatiquement tout nouvel achat si le portefeuille perd ce % depuis son pic.",
+        )
+        cooldown_sec = x2.number_input(
+            "Cooldown anti-whipsaw après vente (sec)", min_value=0, max_value=86400,
+            value=int(saved_cfg.cooldown_sec), step=30, key="auto_cfg_cooldown",
+        )
+
+    current_cfg = AutoTraderConfig(
+        tickers=universe_symbols,
+        csv_sources=all_csv_sources,
+        scan_interval_sec=int(scan_interval_sec),
+        max_open_positions=int(max_open_positions),
+        position_size_pct=float(position_size_pct),
+        min_cash_reserve_pct=float(min_cash_reserve_pct),
+        min_buy_prob=float(min_buy_prob_pct) / 100.0,
+        sell_prob_threshold=float(sell_prob_pct) / 100.0,
+        take_profit_pct=float(take_profit_pct),
+        stop_loss_pct=float(stop_loss_pct),
+        use_atr_stops=bool(use_atr_stops),
+        use_trailing_stop=bool(use_trailing_stop),
+        trailing_atr_mult=float(trailing_atr_mult),
+        use_breakeven_stop=bool(use_breakeven_stop),
+        use_vix_breaker=bool(use_vix_breaker),
+        vix_max_threshold=float(vix_max_threshold),
+        use_rsi_shield=bool(use_rsi_shield),
+        use_sma200_filter=bool(use_sma200_filter),
+        max_drawdown_pct=float(max_drawdown_pct),
+        cooldown_sec=int(cooldown_sec),
+        dry_run=bool(dry_run),
+        period=auto_period,
+        interval=auto_interval,
+        labeling_mode=auto_labeling_mode,
+        learning_mode=auto_learning_mode,
+    )
+
+    # Barre de contrôle principale (Start / Stop / Pause / Cycle unique / Kill Switch)
+    b1, b2, b3, b4, b5 = st.columns([2.2, 2.2, 1.3, 1.5, 1.3])
+    with b1:
+        if not status["is_running"]:
+            if st.button(
+                "🚀 ACTIVER LE MODE AUTOMATIQUE",
+                type="primary",
+                use_container_width=True,
+                disabled=(len(ready_symbols) == 0),
+                key="btn_start_autopilot",
+            ):
+                save_auto_trader_config(current_cfg)
+                ok, msg = engine.start(current_cfg, trained_models=session_models)
+                if ok:
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(msg)
+        else:
+            st.success("🟢 **AUTOPILOT ACTIF (EN BOUCLE)**" if not status["is_paused"] else "⏸️ **AUTOPILOT EN PAUSE**")
+
+    with b2:
+        if st.button(
+            "🛑 INTERROMPRE LE MODE AUTOMATIQUE",
+            use_container_width=True,
+            disabled=(not status["is_running"]),
+            key="btn_stop_autopilot",
+        ):
+            ok, msg = engine.stop()
+            st.warning(msg)
+            st.rerun()
+
+    with b3:
+        if status["is_running"]:
+            if status["is_paused"]:
+                if st.button("▶️ Reprendre", use_container_width=True, key="btn_resume_autopilot"):
+                    engine.resume()
+                    st.rerun()
+            else:
+                if st.button("⏸️ Pause", use_container_width=True, key="btn_pause_autopilot"):
+                    engine.pause()
+                    st.rerun()
+        else:
+            if st.button("💾 Sauver Config", use_container_width=True, key="btn_save_autopilot_cfg"):
+                save_auto_trader_config(current_cfg)
+                st.toast("Configuration Autopilot sauvegardée !", icon="💾")
+
+    with b4:
+        if st.button(
+            "⚡ Exécuter 1 Cycle",
+            use_container_width=True,
+            disabled=(len(ready_symbols) == 0 or status["is_running"]),
+            key="btn_single_cycle_autopilot",
+            help="Lance un cycle unique (Vente -> Sélection -> Achat) pour tester la configuration.",
+        ):
+            save_auto_trader_config(current_cfg)
+            engine.config = current_cfg
+            engine.register_models(session_models)
+            with st.spinner("Exécution d'un cycle complet d'analyse et d'ordres..."):
+                report = engine.run_single_cycle()
+            st.success(
+                f"Cycle #{report['cycle']} terminé : {len(report['sells'])} vente(s), "
+                f"{len(report['buys'])} achat(s) | Équité : {report['equity']:,.2f} $"
+            )
+            st.rerun()
+
+    with b5:
+        if st.button("🔄 Actualiser", use_container_width=True, key="btn_refresh_autopilot"):
+            st.rerun()
+
+    # Commande Expert : Kill Switch (Liquidation Totale)
+    with st.expander("🚨 Commandes d'Urgence (Kill Switch)", expanded=False):
+        st.warning("La liquidation totale interrompt immédiatement la boucle automatique et vend toutes les positions ouvertes dans `portfolio.json` pour repasser 100% Cash.")
+        confirm_liq = st.checkbox("Je confirme vouloir tout vendre et passer 100% Cash", key="confirm_kill_switch")
+        if st.button("🚨 LIQUIDATION TOTALE (100% CASH)", disabled=not confirm_liq, key="btn_kill_switch"):
+            closed, pnl_liq, liq_msg = engine.emergency_liquidate_all()
+            st.warning(liq_msg)
+            st.rerun()
+
+    if len(ready_symbols) == 0 and universe_symbols:
+        st.warning("⚠️ Lancez d'abord l'**Étape 2 (Apprentissage)** pour entraîner vos modèles avant d'activer le Mode Automatique.")
+
+    # =========================================================================
+    # TABLEAU DE BORD TEMPS RÉEL DU MODE AUTOMATIQUE
+    # =========================================================================
+    status = engine.get_status()
+    pf = load_portfolio()
+
+    st.divider()
+    st.subheader("📡 Supervision en Temps Réel")
+
+    k1, k2, k3, k4, k5, k6 = st.columns(6)
+    state_label = "🟢 ACTIF" if (status["is_running"] and not status["is_paused"]) else ("⏸️ PAUSE" if status["is_paused"] else "🔴 ARRÊTÉ")
+    k1.metric("Statut Moteur", state_label)
+    k2.metric("Cycles Boucle", status["cycle_count"])
+    k3.metric("Cash Disponible", f"{pf.get('cash', 0.0):,.2f} $")
+    k4.metric("Équité Estimée", f"{status['current_equity'] or pf.get('cash', 0.0):,.2f} $")
+    k5.metric("PnL Réalisé (Auto)", f"{status['realized_pnl']:+,.2f} $")
+    k6.metric("Achats / Ventes", f"{status['total_buys']} / {status['total_sells']}")
+
+    if status.get("drawdown_halted"):
+        st.error(f"🚨 Coupe-circuit Drawdown actif ({status['drawdown_pct']:.2f}%) : nouveaux achats suspendus.")
+    if status.get("last_error"):
+        st.warning(f"⚠️ Dernière erreur moteur : {status['last_error']}")
+
+    tab_pos, tab_rank, tab_trades, tab_logs = st.tabs([
+        "📊 Positions & Équité",
+        "🏆 Classement IA (Dernier Scan)",
+        "📜 Historique des Trades Auto",
+        "🖥️ Journal d'Exécution (Logs)",
+    ])
+
+    with tab_pos:
+        positions = pf.get("positions", {})
+        if positions:
+            pos_rows = []
+            for sym, p in positions.items():
+                pos_rows.append({
+                    "Symbole": sym,
+                    "Nom": get_company_name_from_yahoo(sym),
+                    "Quantité": round(float(p.get("qty", 0)), 4),
+                    "PRU ($)": round(float(p.get("avg_price", 0)), 2),
+                    "Stop-Loss ($)": round(float(p["stop_loss"]), 2) if p.get("stop_loss") else "-",
+                    "Take-Profit ($)": round(float(p["take_profit"]), 2) if p.get("take_profit") else "-",
+                })
+            st.dataframe(pd.DataFrame(pos_rows), use_container_width=True, hide_index=True)
+        else:
+            st.info("Aucune position ouverte actuellement dans le portefeuille.")
+
+        eq_hist = status.get("equity_history", [])
+        if len(eq_hist) >= 2:
+            df_eq = pd.DataFrame(eq_hist)
+            fig_eq = go.Figure()
+            fig_eq.add_trace(go.Scatter(x=df_eq["time"], y=df_eq["equity"], mode="lines+markers", name="Équité Totale ($)", line=dict(color="#00ff88", width=2)))
+            fig_eq.add_trace(go.Scatter(x=df_eq["time"], y=df_eq["cash"], mode="lines", name="Cash ($)", line=dict(color="#00d2ff", dash="dot")))
+            fig_eq.update_layout(title="Courbe d'Équité de la Session Automatique", template="plotly_dark", height=350)
+            st.plotly_chart(fig_eq, use_container_width=True)
+
+    with tab_rank:
+        rankings = status.get("last_rankings", [])
+        if rankings:
+            st.dataframe(pd.DataFrame(rankings), use_container_width=True, hide_index=True)
+        else:
+            st.info("Aucun scan effectué pour l'instant. Lancez le Mode Automatique ou cliquez sur 'Exécuter 1 Cycle'.")
+
+    with tab_trades:
+        events = status.get("trade_events", [])
+        if events:
+            df_ev = pd.DataFrame(events[::-1])
+            st.dataframe(df_ev, use_container_width=True, hide_index=True)
+            st.download_button(
+                "📥 Exporter les Trades Auto (CSV)",
+                data=df_ev.to_csv(index=False).encode("utf-8"),
+                file_name="autopilot_trades.csv",
+                mime="text/csv",
+                key="dl_auto_trades",
+            )
+        else:
+            st.info("Aucun ordre exécuté par le mode automatique pour le moment.")
+
+    with tab_logs:
+        logs = status.get("logs", [])
+        if logs:
+            df_logs = pd.DataFrame(logs[::-1])
+            st.dataframe(df_logs, use_container_width=True, hide_index=True)
+            st.download_button(
+                "📥 Exporter les Logs (CSV)",
+                data=df_logs.to_csv(index=False).encode("utf-8"),
+                file_name="autopilot_logs.csv",
+                mime="text/csv",
+                key="dl_auto_logs",
+            )
+        else:
+            st.info("Journal vide.")
+
+    # Auto-refresh optionnel lorsque le moteur tourne
+    if status["is_running"]:
+        auto_refresh = st.checkbox("🔄 Rafraîchissement automatique du tableau de bord (toutes les 10s)", value=False, key="auto_refresh_dashboard")
+        if auto_refresh:
+            time.sleep(10)
+            st.rerun()
+
+
+# --- IMPORTATEUR DE WATCHLISTS CSV (CONFORMITÉ & TRADUCTION AUTO) ---
+_HAS_ST_DIALOG = hasattr(st, "dialog")
+
+
+def _sync_custom_watchlists_state():
+    """Synchronise les watchlists CSV importées en session dans MAJOR_STOCKS et PREDEFINED_PORTFOLIOS."""
+    custom_stocks = st.session_state.get("custom_major_stocks", {})
+    if custom_stocks:
+        MAJOR_STOCKS.update(custom_stocks)
+    custom_pfs = st.session_state.get("custom_portfolios", {})
+    if custom_pfs:
+        PREDEFINED_PORTFOLIOS.update(custom_pfs)
+
+
+def _render_watchlist_import_body(target_context="sidebar"):
+    """Contenu de la fenêtre de sélection, vérification et traduction des watchlists CSV."""
+    st.caption(
+        "Sélectionnez un ou plusieurs fichiers Watchlist (.csv) depuis votre répertoire. "
+        "Chaque fichier est vérifié et traduit automatiquement au format de l'application (Yahoo Finance / WatchList)."
+    )
+
+    uploaded_files = st.file_uploader(
+        "Sélectionner un ou plusieurs fichiers Watchlist (.csv)",
+        type=["csv"],
+        accept_multiple_files=True,
+        key=f"csv_wl_uploader_{target_context}",
+    )
+
+    import_mode = st.radio(
+        "Mode de chargement",
+        [
+            "🔄 Alternative (remplacer la sélection actuelle)",
+            "➕ Complément (ajouter aux actions actuelles)",
+        ],
+        horizontal=True,
+        key=f"csv_wl_mode_{target_context}",
+    )
+
+    save_to_disk = st.checkbox(
+        "💾 Enregistrer la watchlist traduite dans le dossier WatchList/",
+        value=True,
+        key=f"csv_wl_save_{target_context}",
+    )
+
+    if not uploaded_files:
+        st.info("Cliquez sur **Browse files** pour ouvrir l'explorateur et sélectionner vos fichiers CSV.")
+        return
+
+    valid_results = []
+    for up_file in uploaded_files:
+        res = parse_and_validate_watchlist_csv(up_file, up_file.name)
+        if res["is_valid"]:
+            valid_results.append((up_file.name, res))
+            conv_msg = ""
+            if res["conversions"]:
+                sample_conv = ", ".join(f"`{r}` → `{c}`" for r, c in res["conversions"][:4])
+                more = f" (+{len(res['conversions']) - 4})" if len(res["conversions"]) > 4 else ""
+                conv_msg = f" | Traduction : {sample_conv}{more}"
+            st.success(
+                f"✅ **{up_file.name}** — **{len(res['stocks'])}** tickers valides "
+                f"({res['format_detected']}){conv_msg}"
+            )
+            for w in res["warnings"]:
+                st.warning(f"⚠️ {up_file.name} : {w}")
+            with st.expander(f"Aperçu traduit : {up_file.name} ({len(res['entries'])} lignes)"):
+                preview_df = pd.DataFrame([
+                    {
+                        "Nom": e["name"],
+                        "Symbole brut": e["raw_symbol"],
+                        "Symbole traduit (Yahoo)": e["symbol"],
+                        "Bourse": e["exchange"],
+                    }
+                    for e in res["entries"]
+                ])
+                st.dataframe(preview_df, use_container_width=True, hide_index=True)
+        else:
+            err_txt = " ; ".join(res["errors"]) if res["errors"] else "Format non reconnu."
+            st.error(f"❌ **{up_file.name}** — Fichier non conforme : {err_txt}")
+
+    if not valid_results:
+        st.warning("Aucun fichier conforme à charger. Vérifiez que votre CSV contient une colonne Symbol/Symbole/Ticker.")
+        return
+
+    if st.button(
+        f"✅ Charger {len(valid_results)} watchlist(s) ({sum(len(r['stocks']) for _, r in valid_results)} tickers)",
+        type="primary",
+        use_container_width=True,
+        key=f"csv_wl_apply_{target_context}",
+    ):
+        custom_stocks = st.session_state.setdefault("custom_major_stocks", {})
+        custom_pfs = st.session_state.setdefault("custom_portfolios", {})
+
+        all_imported_stocks = []
+        saved_count = 0
+
+        for _, res in valid_results:
+            custom_stocks.update(res["major_stocks_map"])
+            MAJOR_STOCKS.update(res["major_stocks_map"])
+            custom_pfs[res["list_name"]] = list(res["stocks"])
+            PREDEFINED_PORTFOLIOS[res["list_name"]] = list(res["stocks"])
+
+            for s in res["stocks"]:
+                if s not in all_imported_stocks:
+                    all_imported_stocks.append(s)
+
+            if save_to_disk:
+                ok_save, _ = save_translated_watchlist_csv(res["translated_csv"], res["clean_filename"])
+                if ok_save:
+                    saved_count += 1
+
+        if len(valid_results) == 1:
+            target_pf_name = valid_results[0][1]["list_name"]
+        else:
+            target_pf_name = f"📂 Import combiné ({len(valid_results)} fichiers)"
+            custom_pfs[target_pf_name] = list(all_imported_stocks)
+            PREDEFINED_PORTFOLIOS[target_pf_name] = list(all_imported_stocks)
+
+        if import_mode.startswith("🔄"):
+            st.session_state[f"pending_pf_{target_context}"] = target_pf_name
+            st.session_state[f"wl_complement_{target_context}"] = []
+        else:
+            existing_comp = list(st.session_state.get(f"wl_complement_{target_context}", []))
+            for s in all_imported_stocks:
+                if s not in existing_comp:
+                    existing_comp.append(s)
+            st.session_state[f"wl_complement_{target_context}"] = existing_comp
+
+        st.session_state[f"wl_version_{target_context}"] = st.session_state.get(f"wl_version_{target_context}", 0) + 1
+        st.session_state[f"wl_fallback_open_{target_context}"] = False
+
+        save_note = f" ({saved_count} enregistrée(s) dans WatchList/)" if save_to_disk and saved_count else ""
+        st.toast(f"✅ {len(all_imported_stocks)} ticker(s) chargé(s){save_note}", icon="📂")
+        st.rerun()
+
+
+if _HAS_ST_DIALOG:
+    @st.dialog("📂 Importer des Watchlists CSV", width="large")
+    def _watchlist_import_modal(target_context="sidebar"):
+        _render_watchlist_import_body(target_context)
+else:
+    def _watchlist_import_modal(target_context="sidebar"):
+        st.session_state[f"wl_fallback_open_{target_context}"] = True
+
+
 # --- FONCTION PRINCIPALE ---
 def main():
     if "portfolios_synced" not in st.session_state:
@@ -2244,8 +3106,22 @@ def main():
         st.session_state["portfolios_synced"] = True
 
     st.sidebar.title("🧭 Menu Principal")
+
+    # Indicateur temps réel & Bouton STOP d'urgence du Mode Automatique visible partout
+    _auto_engine = get_global_auto_trader()
+    _auto_status = _auto_engine.get_status()
+    if _auto_status["is_running"]:
+        if _auto_status["is_paused"]:
+            st.sidebar.warning(f"⏸️ Autopilot en pause (Cycle #{_auto_status['cycle_count']})")
+        else:
+            st.sidebar.success(f"🟢 Autopilot ACTIF (Cycle #{_auto_status['cycle_count']})")
+        if st.sidebar.button("🛑 Interrompre Auto-Trading", use_container_width=True, key="sidebar_stop_autopilot"):
+            _auto_engine.stop()
+            st.rerun()
+
     menu = st.sidebar.radio("Sélectionnez un module :", [
         "📈 Terminal de Trading",
+        "⚡ Mode Trading Automatique (Autopilot)",
         "🕹️ Paper Trading (Virtuel)",
         "🕹️ Paper Trading (Options)",
         "⏪ Backtester Systématique (Options)",
@@ -2273,25 +3149,65 @@ def main():
     )
     
     
-    # --- NOUVEAU : Sélection rapide de portefeuilles ---
+    # --- NOUVEAU : Sélection rapide de portefeuilles + Import CSV ---
+    _sync_custom_watchlists_state()
+    pending_sidebar_pf = st.session_state.pop("pending_pf_sidebar", None)
+    if pending_sidebar_pf and pending_sidebar_pf in PREDEFINED_PORTFOLIOS:
+        st.session_state["pf_select_sidebar"] = pending_sidebar_pf
+
+    col_pf_lbl, col_pf_btn = st.sidebar.columns([5, 1])
+    with col_pf_lbl:
+        st.markdown("**💡 Sélection rapide de portefeuille**")
+    with col_pf_btn:
+        if st.button("📂", key="btn_import_csv_sidebar", help="Importer des watchlists CSV depuis un répertoire"):
+            if _HAS_ST_DIALOG:
+                _watchlist_import_modal("sidebar")
+            else:
+                st.session_state["wl_fallback_open_sidebar"] = not st.session_state.get("wl_fallback_open_sidebar", False)
+
+    if not _HAS_ST_DIALOG and st.session_state.get("wl_fallback_open_sidebar", False):
+        with st.sidebar.expander("📂 Importer des Watchlists CSV", expanded=True):
+            _render_watchlist_import_body("sidebar")
+
     portfolio_choice = st.sidebar.selectbox(
         "💡 Sélection rapide de portefeuille",
         options=list(PREDEFINED_PORTFOLIOS.keys()),
-        index=0
+        index=0,
+        key="pf_select_sidebar",
+        label_visibility="collapsed"
     )
-    
+
+    last_sidebar_pf = st.session_state.get("last_pf_sidebar")
+    if last_sidebar_pf is not None and last_sidebar_pf != portfolio_choice:
+        st.session_state["wl_complement_sidebar"] = []
+    st.session_state["last_pf_sidebar"] = portfolio_choice
+
     # Si un portefeuille est choisi, on utilise sa liste. Sinon par défaut Apple.
-    default_selection = PREDEFINED_PORTFOLIOS[portfolio_choice] if portfolio_choice != "Sélection Manuelle" else ["Apple Inc. (US)"]
-    
+    default_selection = list(PREDEFINED_PORTFOLIOS[portfolio_choice]) if portfolio_choice != "Sélection Manuelle" else ["Apple Inc. (US)"]
+    for extra_s in st.session_state.get("wl_complement_sidebar", []):
+        if extra_s not in default_selection:
+            default_selection.append(extra_s)
+
     # Filtrer les valeurs par défaut qui sont dans MAJOR_STOCKS pour le multiselect
     valid_defaults = [s for s in default_selection if s in MAJOR_STOCKS.keys()]
-    
+    sidebar_wl_ver = st.session_state.get("wl_version_sidebar", 0)
+
     # Remplacement par Multiselect réactif
     stock_choices = st.sidebar.multiselect(
         "Rechercher une ou plusieurs actions", 
         options=list(MAJOR_STOCKS.keys()), 
         default=valid_defaults,
-        key=f"stocks_ms_{portfolio_choice}"
+        key=f"stocks_ms_{portfolio_choice}_{sidebar_wl_ver}"
+    )
+
+    # Sélection multiple directe de fichiers CSV de trackers (WatchList/)
+    _avail_sidebar_csvs = list_watchlist_csv_files()
+    selected_sidebar_csvs = st.sidebar.multiselect(
+        "📂 Fichiers CSV de trackers (multi-sélection)",
+        options=_avail_sidebar_csvs,
+        default=[],
+        key="sidebar_multi_csv_files",
+        help="Sélectionnez plusieurs fichiers CSV du dossier WatchList/ pour fusionner tous leurs trackers.",
     )
     
     tickers = []
@@ -2301,6 +3217,10 @@ def main():
         if s not in MAJOR_STOCKS.keys():
             tickers.append(s)
 
+    if selected_sidebar_csvs:
+        _csv_bundle = load_tickers_from_csv_files(selected_sidebar_csvs)
+        tickers.extend(_csv_bundle["symbols"])
+
     if "--- Saisir manuellement ---" in stock_choices:
         custom_ticker = st.sidebar.text_input("Ticker personnalisé (ex: EPA:MC)", "AAPL")
         tickers.append(convert_google_to_yahoo_ticker(custom_ticker))
@@ -2309,8 +3229,8 @@ def main():
         if choice != "--- Saisir manuellement ---":
             tickers.append(convert_google_to_yahoo_ticker(MAJOR_STOCKS[choice]))
             
-    # Déduplication
-    tickers = list(set(tickers))
+    # Déduplication en préservant l'ordre
+    tickers = list(dict.fromkeys(tickers))
     
     if menu == "📈 Terminal de Trading":
         st.title("🚀 XGBoost Stock Trader Pro")
@@ -2320,6 +3240,26 @@ def main():
         interval = st.sidebar.selectbox("Intervalle", ["1d", "1wk"], index=0)
         initial_capital = st.sidebar.number_input("Capital Initial Total ($)", min_value=100, max_value=1000000, value=10000, step=100)
         optimize_model = st.sidebar.checkbox("🧠 Auto-Optimisation (Optuna Bayésien)")
+
+        with st.sidebar.expander("⚙️ Stratégie & Gestion du Risque", expanded=False):
+            lbl_choice = st.selectbox(
+                "Cible ML (Labeling)",
+                ["Triple Barrier (ATR 5j)", "Classique (J+1)"],
+                index=0,
+                help="Triple Barrier aligne la cible ML avec les stops ATR (+3 ATR vs -1.5 ATR sur 5j)."
+            )
+            calibrate_probs = st.checkbox("Calibration des probabilités", value=True, help="Calibre les probabilités de l'ensemble (Platt scaling).")
+            use_trailing_stop = st.checkbox("Trailing Stop ATR (Chandelier)", value=True, help="Laisse courir les tendances avec un stop suiveur 2 ATR.")
+            use_regime_filters = st.checkbox("Filtres SMA 200 & RSI en backtest", value=True, help="Bloque les achats sous SMA 200 ou si RSI >= 75.")
+            use_vol_sizing = st.checkbox("Position Sizing Vol/ATR (2% risque)", value=False, help="Dimensionne chaque position selon le risque ATR et le VIX.")
+
+        strategy_cfg = {
+            "labeling_mode": "triple_barrier" if lbl_choice.startswith("Triple") else "next_day",
+            "calibrate_probs": calibrate_probs,
+            "use_trailing_stop": use_trailing_stop,
+            "use_regime_filters": use_regime_filters,
+            "use_vol_sizing": use_vol_sizing,
+        }
         
         st.sidebar.divider()
         st.sidebar.header("Logique Walk-Forward (WFA)")
@@ -2340,10 +3280,12 @@ def main():
         if len(tickers) == 0:
             st.warning("👈 Veuillez sélectionner au moins une action dans le menu latéral.")
         elif len(tickers) == 1:
-            run_single_mode(tickers[0], period, interval, initial_capital, optimize_model, use_wfa, wfa_train_window, wfa_step, wfa_start_date, wfa_end_date)
+            run_single_mode(tickers[0], period, interval, initial_capital, optimize_model, use_wfa, wfa_train_window, wfa_step, wfa_start_date, wfa_end_date, strategy_cfg=strategy_cfg)
         else:
-            run_portfolio_mode(tickers, period, interval, initial_capital, optimize_model, use_wfa, wfa_train_window, wfa_step, wfa_start_date, wfa_end_date)
+            run_portfolio_mode(tickers, period, interval, initial_capital, optimize_model, use_wfa, wfa_train_window, wfa_step, wfa_start_date, wfa_end_date, strategy_cfg=strategy_cfg)
             
+    elif menu == "⚡ Mode Trading Automatique (Autopilot)":
+        page_auto_trading(sidebar_tickers=tickers, sidebar_csv_files=selected_sidebar_csvs)
     elif menu == "🕹️ Paper Trading (Virtuel)":
         page_paper_trading()
     elif menu == "🕹️ Paper Trading (Options)":

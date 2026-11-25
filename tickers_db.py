@@ -2,8 +2,301 @@
 # Format attendu par notre convertisseur : Google Finance (Bourse:Symbole)
 
 import os
+import io
+import re
 import csv
 import difflib
+
+# Tables de correspondance pour la validation et traduction de Watchlists CSV
+_REUTERS_US_SUFFIXES = ('.O', '.OQ', '.K', '.N', '.A', '.PK', '.OB')
+_YAHOO_VALID_SUFFIXES = (
+    '.PA', '.DE', '.L', '.MI', '.MC', '.AS', '.BR', '.LS', '.SW', '.T',
+    '.HK', '.TO', '.V', '.AX', '.F', '.ST', '.CO', '.OL', '.HE', '.SI',
+    '.KS', '.KQ', '.TW', '.SS', '.SZ', '.NS', '.BO', '.SA', '.MX', '.WA',
+    '.VI', '.PR', '.IR', '.AT', '.IS', '.JO', '.NZ', '.TA', '-USD', '=X', '=F'
+)
+_EXCHANGE_TO_YAHOO_SUFFIX = {
+    'EPA': '.PA', 'PARIS': '.PA', 'EURONEXT PARIS': '.PA', 'PAR': '.PA',
+    'XETRA': '.DE', 'FRA': '.F', 'FRANKFURT': '.DE', 'GER': '.DE', 'ETR': '.DE',
+    'LON': '.L', 'LSE': '.L', 'LONDON': '.L',
+    'BIT': '.MI', 'MILAN': '.MI', 'MIL': '.MI',
+    'BME': '.MC', 'MADRID': '.MC', 'MAD': '.MC',
+    'AMS': '.AS', 'AMSTERDAM': '.AS', 'EURONEXT AMSTERDAM': '.AS',
+    'EBR': '.BR', 'BRUSSELS': '.BR', 'BRUXELLES': '.BR', 'EURONEXT BRUSSELS': '.BR',
+    'LIS': '.LS', 'LISBON': '.LS', 'LISBONNE': '.LS',
+    'VTX': '.SW', 'SWX': '.SW', 'SIX': '.SW', 'ZURICH': '.SW', 'SWISS': '.SW',
+    'TYO': '.T', 'TOKYO': '.T', 'JPX': '.T',
+    'HKG': '.HK', 'HKEX': '.HK', 'HONG KONG': '.HK',
+    'TSE': '.TO', 'TSX': '.TO', 'TORONTO': '.TO',
+    'ASX': '.AX', 'SYDNEY': '.AX',
+    'NASDAQ': '', 'NYSE': '', 'AMEX': '', 'NYSE ARCA': '', 'NYSE AMERICAN': '',
+    'BATS': '', 'CBOE': '', 'US': '', 'OTC': ''
+}
+_SYMBOL_COL_ALIASES = {'symbol', 'symbole', 'ticker', 'tickers', 'ric', 'code', 'sym', 'stock'}
+_NAME_COL_ALIASES = {'name', 'nom', 'company', 'entreprise', 'libelle', 'libellé', 'titre', 'title', 'description'}
+_EXCHANGE_COL_ALIASES = {'exchange', 'marché', 'marche', 'bourse', 'market', 'place'}
+_TICKER_VALID_RE = re.compile(r'^[A-Z0-9\^][A-Z0-9\.\-\=\^]{0,19}$')
+
+
+def normalize_watchlist_symbol(raw_symbol, exchange=""):
+    """
+    Valide et traduit un symbole boursier (Investing.com, Reuters, Google Finance, etc.)
+    vers le format natif Yahoo Finance utilisé par l'application.
+    Retourne une chaîne vide si le symbole est invalide.
+    """
+    if raw_symbol is None:
+        return ""
+    sym = str(raw_symbol).strip().strip('"').strip("'").upper()
+    if not sym or sym in {'NAN', 'NONE', '-', '--', 'N/A', 'NULL'}:
+        return ""
+
+    exch = str(exchange or "").strip().strip('"').strip("'").upper()
+
+    # 1. Format Google Finance (ex: EPA:MC, NASDAQ:AAPL, HKG:1810)
+    if ':' in sym:
+        g_exch, g_sym = sym.split(':', 1)
+        g_exch = g_exch.strip().upper()
+        g_sym = g_sym.strip().upper()
+        suffix = _EXCHANGE_TO_YAHOO_SUFFIX.get(g_exch, '')
+        sym = f"{g_sym}{suffix}"
+    else:
+        # 2. Suffixes Reuters / Investing.com US (.O, .OQ, .K, .N, .A)
+        matched_us = False
+        for suf in _REUTERS_US_SUFFIXES:
+            if sym.endswith(suf) and len(sym) > len(suf):
+                sym = sym[:-len(suf)]
+                matched_us = True
+                break
+
+        if not matched_us:
+            # 3. Suffixe Reuters Suisse (.S -> .SW)
+            if sym.endswith('.S') and len(sym) > 2:
+                sym = sym[:-2] + '.SW'
+            # 4. Classes d'actions US (ex: BRK.B -> BRK-B)
+            elif '.' in sym and not any(sym.endswith(s) for s in _YAHOO_VALID_SUFFIXES):
+                base, tail = sym.rsplit('.', 1)
+                if len(tail) == 1 and tail in {'A', 'B', 'C'} and exch in {'', 'NYSE', 'NASDAQ', 'AMEX', 'US', 'NYSE ARCA'}:
+                    sym = f"{base}-{tail}"
+            # 5. Symbole sans suffixe mais bourse non-US renseignée
+            elif '.' not in sym and '-' not in sym and '=' not in sym and exch:
+                suffix = _EXCHANGE_TO_YAHOO_SUFFIX.get(exch, '')
+                if suffix:
+                    sym = f"{sym}{suffix}"
+
+    if not _TICKER_VALID_RE.match(sym):
+        return ""
+    return sym
+
+
+def _detect_csv_delimiter(first_line):
+    """Détecte le délimiteur CSV (';', ',' ou tabulation) en tenant compte des guillemets."""
+    best_delim = ','
+    best_count = 1
+    for delim in (';', ',', '\t'):
+        try:
+            cols = next(csv.reader([first_line], delimiter=delim))
+            if len(cols) > best_count:
+                best_count = len(cols)
+                best_delim = delim
+        except Exception:
+            continue
+    return best_delim, best_count
+
+
+def parse_and_validate_watchlist_csv(file_content, filename="watchlist.csv"):
+    """
+    Vérifie la conformité d'un fichier Watchlist CSV (Investing.com, Reuters,
+    format interne WatchList ou liste simple de tickers) et le traduit
+    automatiquement au format natif de l'application (Name;Symbol;Exchange).
+    """
+    result = {
+        "is_valid": False,
+        "list_name": "",
+        "clean_filename": "",
+        "format_detected": "",
+        "delimiter": ";",
+        "encoding": "utf-8",
+        "needs_translation": False,
+        "entries": [],
+        "stocks": [],
+        "major_stocks_map": {},
+        "conversions": [],
+        "skipped_count": 0,
+        "warnings": [],
+        "errors": [],
+        "translated_csv": "",
+    }
+
+    # 1. Lecture et décodage robuste (UTF-8 BOM, UTF-8, Windows-1252, Latin-1)
+    if hasattr(file_content, "getvalue"):
+        raw_bytes = file_content.getvalue()
+    elif hasattr(file_content, "read"):
+        raw_bytes = file_content.read()
+    else:
+        raw_bytes = file_content
+
+    text = None
+    if isinstance(raw_bytes, bytes):
+        for enc in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
+            try:
+                text = raw_bytes.decode(enc)
+                result["encoding"] = enc
+                break
+            except UnicodeDecodeError:
+                continue
+    elif isinstance(raw_bytes, str):
+        text = raw_bytes.lstrip("\ufeff")
+        result["encoding"] = "utf-8"
+
+    if not text or not text.strip():
+        result["errors"].append("Le fichier CSV est vide ou illisible.")
+        return result
+
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        result["errors"].append("Le fichier CSV ne contient aucune ligne exploitable.")
+        return result
+
+    # 2. Détection du délimiteur et des colonnes
+    delim, col_count = _detect_csv_delimiter(lines[0])
+    result["delimiter"] = delim
+
+    try:
+        rows = list(csv.reader(io.StringIO(text), delimiter=delim))
+    except Exception as e:
+        result["errors"].append(f"Erreur de lecture CSV : {e}")
+        return result
+
+    rows = [r for r in rows if any(cell.strip() for cell in r)]
+    if not rows:
+        result["errors"].append("Aucune donnée trouvée dans le fichier CSV.")
+        return result
+
+    raw_header = [c.strip().lstrip("\ufeff") for c in rows[0]]
+    lower_header = [c.lower() for c in raw_header]
+
+    sym_idx = next((i for i, h in enumerate(lower_header) if h in _SYMBOL_COL_ALIASES), None)
+    name_idx = next((i for i, h in enumerate(lower_header) if h in _NAME_COL_ALIASES), None)
+    exch_idx = next((i for i, h in enumerate(lower_header) if h in _EXCHANGE_COL_ALIASES), None)
+
+    is_single_col_no_header = False
+    if sym_idx is None:
+        # Cas d'une liste simple de tickers sur 1 colonne (sans en-tête)
+        if col_count == 1 and normalize_watchlist_symbol(raw_header[0]):
+            sym_idx = 0
+            is_single_col_no_header = True
+            data_rows = rows
+            result["format_detected"] = "Liste simple de tickers (1 colonne)"
+            result["needs_translation"] = True
+        else:
+            result["errors"].append(
+                "Colonne de ticker introuvable. Colonnes attendues : 'Symbol', 'Symbole', 'Ticker' ou liste simple."
+            )
+            return result
+    else:
+        data_rows = rows[1:]
+        if delim == "," and len(raw_header) >= 3:
+            result["format_detected"] = "CSV virgule (Investing.com / Reuters)"
+            result["needs_translation"] = True
+        elif delim == ";" and raw_header[0] == "Name" and len(raw_header) >= 2 and raw_header[1] == "Symbol":
+            result["format_detected"] = "WatchList Standard (CSV point-virgule)"
+        elif delim == ";":
+            result["format_detected"] = "CSV point-virgule (FR / Excel)"
+            result["needs_translation"] = True
+        else:
+            result["format_detected"] = f"CSV ({repr(delim)})"
+            result["needs_translation"] = True
+
+    if not data_rows:
+        result["errors"].append("Le fichier contient un en-tête mais aucune ligne de données.")
+        return result
+
+    # 3. Extraction, validation et traduction des tickers
+    seen_symbols = set()
+    entries = []
+    conversions = []
+    skipped = 0
+
+    for row in data_rows:
+        if sym_idx >= len(row):
+            skipped += 1
+            continue
+        raw_sym = row[sym_idx].strip()
+        raw_exch = row[exch_idx].strip() if (exch_idx is not None and exch_idx < len(row)) else ""
+        raw_name = row[name_idx].strip() if (name_idx is not None and name_idx < len(row)) else ""
+
+        clean_sym = normalize_watchlist_symbol(raw_sym, raw_exch)
+        if not clean_sym:
+            if raw_sym:
+                skipped += 1
+            continue
+
+        if clean_sym in seen_symbols:
+            continue
+        seen_symbols.add(clean_sym)
+
+        if raw_sym.upper() != clean_sym:
+            conversions.append((raw_sym, clean_sym))
+            result["needs_translation"] = True
+
+        clean_name = raw_name if raw_name and raw_name.lower() not in {'nan', 'none', '-'} else clean_sym
+        display_name = f"{clean_name} ({clean_sym})"
+
+        entries.append({
+            "display_name": display_name,
+            "symbol": clean_sym,
+            "raw_symbol": raw_sym,
+            "name": clean_name,
+            "exchange": raw_exch,
+        })
+
+    if not entries:
+        result["errors"].append("Aucun ticker valide n'a pu être extrait de ce fichier CSV.")
+        return result
+
+    # 4. Génération du nom de portefeuille et du CSV traduit au format natif (Name;Symbol;Exchange)
+    base_name = os.path.splitext(os.path.basename(filename))[0]
+    clean_base = base_name.split("_Watchlist")[0].strip() or "Watchlist_Import"
+    safe_base = re.sub(r'[<>:"/\\|?*]+', '_', clean_base).strip() or "Watchlist_Import"
+
+    csv_buf = io.StringIO()
+    writer = csv.writer(csv_buf, delimiter=';', lineterminator='\n')
+    writer.writerow(["Name", "Symbol", "Exchange"])
+    for item in entries:
+        writer.writerow([item["name"], item["symbol"], item["exchange"]])
+
+    result["is_valid"] = True
+    result["list_name"] = f"📂 {clean_base}"
+    result["clean_filename"] = f"{safe_base}_Watchlist.csv"
+    result["entries"] = entries
+    result["stocks"] = [e["display_name"] for e in entries]
+    result["major_stocks_map"] = {e["display_name"]: e["symbol"] for e in entries}
+    result["conversions"] = conversions
+    result["skipped_count"] = skipped
+    result["translated_csv"] = csv_buf.getvalue()
+
+    if skipped > 0:
+        result["warnings"].append(f"{skipped} ligne(s) vide(s) ou non conforme(s) ignorée(s).")
+
+    return result
+
+
+def save_translated_watchlist_csv(translated_csv, clean_filename, watchlists_dir=None):
+    """Sauvegarde une watchlist traduite au format natif dans le dossier WatchList/."""
+    try:
+        if watchlists_dir is None:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            watchlists_dir = os.path.join(base_dir, "WatchList")
+        os.makedirs(watchlists_dir, exist_ok=True)
+        safe_name = os.path.basename(clean_filename)
+        if not safe_name.lower().endswith(".csv"):
+            safe_name += ".csv"
+        out_path = os.path.join(watchlists_dir, safe_name)
+        with open(out_path, "w", encoding="utf-8", newline="") as f:
+            f.write(translated_csv)
+        return True, out_path
+    except Exception as e:
+        return False, str(e)
 
 def _get_best_match(name):
     for k in MAJOR_STOCKS.keys():
@@ -40,9 +333,9 @@ def _load_dynamic_watchlists():
             
             try:
                 filepath = os.path.join(watchlists_dir, file)
-                df = pd.read_csv(filepath, sep=';', encoding='utf-8', on_bad_lines='skip')
+                df = pd.read_csv(filepath, sep=';', encoding='utf-8-sig', on_bad_lines='skip')
                 if len(df.columns) < 2:
-                    df = pd.read_csv(filepath, sep=',', encoding='utf-8', on_bad_lines='skip')
+                    df = pd.read_csv(filepath, sep=',', encoding='utf-8-sig', on_bad_lines='skip')
                     
                 for _, row in df.iterrows():
                     name = str(row.get('Name', row.get('Nom', 'Unknown'))).strip()

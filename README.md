@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12%20%7C%203.13-blue.svg)](https://www.python.org/)
 [![Machine Learning](https://img.shields.io/badge/ML-XGBoost%20%7C%20LightGBM%20%7C%20RandomForest-green.svg)](https://xgboost.readthedocs.io/)
 [![Architecture](https://img.shields.io/badge/Architecture-Clean%20%26%20Modular%20(quant__core)-orange.svg)](#architecture-du-projet)
-[![Tests](https://img.shields.io/badge/Tests-Passing%20(13%2F13)-brightgreen.svg)](#-suite-de-tests-automatis%C3%A9s)
+[![Tests](https://img.shields.io/badge/Tests-Passing%20(28%2F28)-brightgreen.svg)](#-suite-de-tests-automatis%C3%A9s)
 
 Un terminal quantitatif complet conçu selon les standards de l'industrie financière. Le système fusionne le **Machine Learning d'Ensemble (XGBoost, LightGBM, Random Forest)**, l'analyse technique stationnaire, le **Traitement du Langage Naturel (NLP)**, le **Pricing d'Options (Black-Scholes & Greeks)** et un **Pôle d'Académies Quantitatives interactives** pour former et guider les investisseurs.
 
@@ -40,7 +40,13 @@ Le dépôt est strictement découplé en couches modulaires pour garantir fiabil
     *   Explicabilité des décisions en temps réel par **SHAP Waterfall**.
     *   Tearsheets quantitatifs, simulation de Monte Carlo (Bootstrap) et académie pédagogique.
 
-4.  **`headless_bot.py` (Démon Autonome d'Arrière-Plan)** :
+4.  **`auto_trader_engine.py` (Moteur de Trading Automatique en Boucle — Autopilot)** :
+    *   Module Python indépendant de Streamlit orchestrant la boucle autonome continue après apprentissage (**WFA** ou **Standard**).
+    *   Sélection et fusion multi-fichiers CSV de trackers depuis `WatchList/` (avec déduplication et traduction automatique Yahoo Finance).
+    *   Cycle autonome complet : surveillance des positions (Take-Profit rentabilité, Stop-Loss, Trailing Stop ATR, Breakeven +1R, signal IA) → vente automatique & libération du cash → classement IA des opportunités → achat automatique → boucle continue.
+    *   Commandes Expert : interruption immédiate (**Stop**), **Pause / Reprise**, **Cycle Unique**, **Kill Switch (Liquidation 100% Cash)**, coupe-circuit Drawdown Max, coupe-circuit VIX, bouclier RSI, cooldown anti-whipsaw, mode **Dry-Run (Simulation)** et export CSV des logs/trades.
+
+5.  **`headless_bot.py` (Démon Autonome d'Arrière-Plan)** :
     *   Démon 24h/24 piloté par `schedule` ou exécutable en une passe (`--once`).
     *   Filtrage de sécurité automatique (VIX Circuit Breaker, RSI Shield).
     *   Surveillance proactive des positions ouvertes : exécution automatique des Stop-Loss, Breakeven et Take-Profit en séance.
@@ -123,7 +129,7 @@ Les webhooks Discord et tokens Telegram se configurent directement dans l'onglet
 
 ## 🧪 Suite de Tests Automatisés
 
-Le package inclut un banc d'essai complet [`tests/test_system.py`](file:///H:/Mon%20Drive/Antoine-Drive/Antigravity/XGBoost_Trading_Github_Package/XGBoost-Trader-10_Oct_26/XGBoost-Trader-10_Oct_26_Clean/tests/test_system.py) couvrant :
+Le package inclut deux bancs d'essai complets (`tests/test_system.py` et `tests/test_auto_trader.py`) couvrant :
 
 *   `test_01_feature_engineering_integrity` : Non-suppression de la dernière bougie $t$ et calcul du NATR.
 *   `test_02_ml_trader_training_and_atr_stops` : Entraînement de l'ensemble et exécution événementielle.
@@ -136,9 +142,10 @@ Le package inclut un banc d'essai complet [`tests/test_system.py`](file:///H:/Mo
 *   `test_09_options_portfolio_and_execution` : Intégrité du portefeuille d'options (`positions` dict), exécution Call/Put et calcul P&L.
 *   `test_10_portfolio_resilience_to_corrupted_json` : Résilience et auto-réparation face à d'anciennes structures de données corrompues.
 
-Pour lancer les tests :
+Pour lancer l'ensemble des tests :
 ```bash
 python tests/test_system.py
+python tests/test_auto_trader.py
 ```
 
 ---

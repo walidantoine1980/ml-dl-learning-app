@@ -122,7 +122,19 @@ def check_open_positions_risk(config):
             avg_price = pos.get('avg_price', current_price)
             sl_price = pos.get('stop_loss')
             tp_price = pos.get('take_profit')
-            
+
+            # Mise à jour automatique du Breakeven Stop (0 Risque) à +1R
+            if sl_price and sl_price < avg_price:
+                initial_risk = max(avg_price - sl_price, avg_price * 0.01)
+                if current_price >= avg_price + initial_risk:
+                    pos['stop_loss'] = avg_price
+                    sl_price = avg_price
+                    save_portfolio(pf)
+                    send_alert(
+                        config,
+                        f"🛡️ **Breakeven Stop activé sur {symbol}** : Stop-Loss remonté à **{avg_price:.2f} $** (0 risque)."
+                    )
+
             hit_reason = None
             if sl_price and current_price <= sl_price:
                 hit_reason = f"🛑 STOP-LOSS ATTEINT ({current_price:.2f} $ <= {sl_price:.2f} $)"
@@ -186,25 +198,34 @@ def run_trading_job():
             df_raw = df_raw.loc[:, ~df_raw.columns.duplicated()].copy()
             
             # 2. Enrichissement technique et macro-économique avec conservation de la dernière bougie
-            df = add_features(df_raw)
+            df = add_features(df_raw, labeling_mode="triple_barrier")
             if macro_df is not None:
                 df = join_macro_data(df, macro_df)
                 
             if df.empty or len(df) < 40:
                 continue
 
-            # 3. Entraînement de l'Ensemble IA (XGBoost + LightGBM + RF)
+            # 3. Entraînement de l'Ensemble IA (XGBoost + LightGBM + RF) avec TTL de fraîcheur (7 jours par défaut)
             model_file = f"models/{yahoo_symbol}_model.pkl"
+            model_ttl_days = int(config.get("model_ttl_days", 7))
             trader = None
             if os.path.exists(model_file):
                 try:
-                    trader = MLTrader.load(model_file)
+                    file_age_days = (datetime.now() - datetime.fromtimestamp(os.path.getmtime(model_file))).days
+                    if file_age_days < model_ttl_days:
+                        loaded_trader = MLTrader.load(model_file)
+                        if getattr(loaded_trader, 'saved_at', None):
+                            saved_age = (datetime.now() - datetime.fromisoformat(loaded_trader.saved_at)).days
+                            if saved_age < model_ttl_days:
+                                trader = loaded_trader
+                        else:
+                            trader = loaded_trader
                 except Exception:
                     trader = None
                     
             if trader is None:
                 trader = MLTrader()
-                features = trader.train(df, optimize=False, use_wfa=False)
+                features = trader.train(df, optimize=False, use_wfa=False, calibrate=True, retrain_final=True)
                 try:
                     trader.save(model_file)
                 except Exception:
