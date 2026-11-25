@@ -155,16 +155,16 @@ class AutoTraderConfig:
     tickers: List[str] = field(default_factory=list)
     csv_sources: List[str] = field(default_factory=list)
     # Cadence et capacité du portefeuille
-    scan_interval_sec: int = 60
+    scan_interval_sec: int = 300
     max_open_positions: int = 5
     position_size_pct: float = 15.0
     min_cash_reserve_pct: float = 10.0
     # Seuils de décision IA (consomment la prédiction du modèle sans toucher aux stratégies)
-    min_buy_prob: float = 0.58
+    min_buy_prob: float = 0.52
     sell_prob_threshold: float = 0.45
     # Critères de rentabilité et gestion dynamique du risque
     take_profit_pct: float = 6.0
-    stop_loss_pct: float = 3.0
+    stop_loss_pct: float = 4.0
     use_atr_stops: bool = True
     use_trailing_stop: bool = True
     trailing_atr_mult: float = 2.0
@@ -175,14 +175,14 @@ class AutoTraderConfig:
     use_rsi_shield: bool = True
     use_sma200_filter: bool = False
     max_drawdown_pct: float = 12.0
-    cooldown_sec: int = 300
+    cooldown_sec: int = 3600
     # Mode simulation (Dry-Run) vs Paper Trading réel (portfolio.json)
     dry_run: bool = False
     # Paramètres de données / apprentissage (informatifs pour cohérence)
-    period: str = "2y"
+    period: str = "5y"
     interval: str = "1d"
     labeling_mode: str = "triple_barrier"
-    learning_mode: str = "Standard"
+    learning_mode: str = "Walk-Forward Analysis (WFA)"
     models_dir: str = "models"
     portfolio_path: Optional[str] = None
 

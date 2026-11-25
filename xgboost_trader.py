@@ -2437,9 +2437,13 @@ def page_auto_trading(sidebar_tickers=None, sidebar_csv_files=None):
         for up in uploaded_auto_csvs:
             res = parse_and_validate_watchlist_csv(up, up.name)
             if res["is_valid"]:
-                uploaded_names.append(up.name)
+                saved_name = up.name
                 if save_uploaded_to_disk:
-                    save_translated_watchlist_csv(res["translated_csv"], res["clean_filename"])
+                    ok_save, _ = save_translated_watchlist_csv(res["translated_csv"], res["clean_filename"])
+                    if ok_save:
+                        saved_name = res["clean_filename"]
+                if saved_name not in uploaded_names:
+                    uploaded_names.append(saved_name)
                 for item in res["entries"]:
                     sym = convert_google_to_yahoo_ticker(item["symbol"])
                     if sym and sym not in seen_syms:
@@ -2520,7 +2524,7 @@ def page_auto_trading(sidebar_tickers=None, sidebar_csv_files=None):
     auto_learning_mode = col_l3.selectbox(
         "Mode d'apprentissage",
         ["Standard (Train/Test)", "Walk-Forward Analysis (WFA)"],
-        index=0,
+        index=1 if saved_cfg.learning_mode.startswith("Walk-Forward") else 0,
         key="auto_learning_mode",
     )
     auto_optimize = col_l4.checkbox("🧠 Auto-Optimisation (Optuna)", value=False, key="auto_optimize")
@@ -3598,7 +3602,7 @@ def main():
         
         st.sidebar.divider()
         st.sidebar.header("Logique Walk-Forward (WFA)")
-        use_wfa = st.sidebar.checkbox("Activer Walk-Forward Analysis (WFA)")
+        use_wfa = st.sidebar.checkbox("Activer Walk-Forward Analysis (WFA)", value=True)
         wfa_train_window = st.sidebar.selectbox("Fenêtre Entraînement", ["2Y", "5Y", "7Y"], index=1)
         wfa_step = st.sidebar.selectbox("Pas Avancement", ["1M", "2M", "6M", "1Y"], index=2)
         
