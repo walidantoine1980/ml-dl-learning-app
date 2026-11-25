@@ -193,6 +193,13 @@ class AutoTraderConfig:
     vix_max_threshold: float = 30.0
     use_rsi_shield: bool = True
     use_sma200_filter: bool = False
+    # Point 1 : Filtre Qualité WFA (n'achète que les modèles rentables en apprentissage)
+    use_wfa_quality_filter: bool = True
+    min_wfa_profit_factor: float = 1.0
+    min_wfa_sharpe: float = 0.0
+    # Point 2 : Sizing adaptatif au régime de marché (SPY & VIX)
+    use_adaptive_regime_sizing: bool = True
+    defensive_size_multiplier: float = 0.50
     max_drawdown_pct: float = 12.0
     cooldown_sec: int = 3600
     # Mode simulation (Dry-Run) vs Paper Trading réel (portfolio.json)
@@ -291,6 +298,8 @@ class AutoTraderEngine:
         self._drawdown_pct: float = 0.0
         self._drawdown_halted: bool = False
         self._last_vix: Optional[float] = None
+        self._market_regime: str = "HAUSSIER CALME (100%)"
+        self._effective_position_pct: float = 15.0
         self._last_rankings: List[Dict[str, Any]] = []
         self._logs: List[Dict[str, Any]] = []
         self._trade_events: List[Dict[str, Any]] = []
@@ -707,6 +716,34 @@ class AutoTraderEngine:
 
         vix_halted = bool(cfg.use_vix_breaker and current_vix is not None and current_vix > cfg.vix_max_threshold)
 
+        # Point 2 : Régime de marché global (SPY > SMA200 & VIX < 20 -> 100%, sinon taille défensive)
+        spy_above_sma200 = True
+        if macro_df is not None and not macro_df.empty and "SPY_Above_SMA200" in macro_df.columns:
+            spy_s = macro_df["SPY_Above_SMA200"].dropna()
+            if not spy_s.empty:
+                spy_above_sma200 = bool(float(spy_s.iloc[-1]) >= 0.5)
+
+        is_defensive_regime = (
+            (current_vix is not None and current_vix >= 20.0)
+            or (not spy_above_sma200)
+        )
+        if cfg.use_adaptive_regime_sizing and is_defensive_regime:
+            regime_size_mult = max(0.1, min(1.0, float(cfg.defensive_size_multiplier)))
+            reasons_def = []
+            if current_vix is not None and current_vix >= 20.0:
+                reasons_def.append(f"VIX={current_vix:.1f}")
+            if not spy_above_sma200:
+                reasons_def.append("SPY<SMA200")
+            market_regime_lbl = f"DÉFENSIF ({', '.join(reasons_def)} • x{regime_size_mult:.2f})"
+        else:
+            regime_size_mult = 1.0
+            market_regime_lbl = "HAUSSIER CALME (x1.00)"
+
+        effective_pos_pct = cfg.position_size_pct * regime_size_mult
+        with self._lock:
+            self._market_regime = market_regime_lbl
+            self._effective_position_pct = round(effective_pos_pct, 2)
+
         # ---------------------------------------------------------------------
         # PHASE 3 : SCAN DES TRACKERS & SÉLECTION AUTOMATIQUE D'ACHAT
         # ---------------------------------------------------------------------
@@ -735,6 +772,9 @@ class AutoTraderEngine:
             status_note = "ÉLIGIBLE"
             eligible = True
 
+            wfa_pf = ev["metrics"].get("Profit Factor") if isinstance(ev.get("metrics"), dict) else None
+            wfa_sharpe = ev["metrics"].get("Sharpe Ratio") if isinstance(ev.get("metrics"), dict) else None
+
             if already_held:
                 eligible = False
                 status_note = "EN PORTEFEUILLE"
@@ -750,6 +790,12 @@ class AutoTraderEngine:
             elif ev["prob_buy"] < cfg.min_buy_prob:
                 eligible = False
                 status_note = f"CONVICTION < {cfg.min_buy_prob*100:.0f}%"
+            elif cfg.use_wfa_quality_filter and wfa_pf is not None and float(wfa_pf) < cfg.min_wfa_profit_factor:
+                eligible = False
+                status_note = f"QUALITÉ WFA (PF {float(wfa_pf):.2f} < {cfg.min_wfa_profit_factor:.2f})"
+            elif cfg.use_wfa_quality_filter and wfa_sharpe is not None and float(wfa_sharpe) < cfg.min_wfa_sharpe:
+                eligible = False
+                status_note = f"QUALITÉ WFA (Sharpe {float(wfa_sharpe):.2f} < {cfg.min_wfa_sharpe:.2f})"
             elif cfg.use_rsi_shield and ev["rsi_status"] == "OVERBOUGHT_SHIELD":
                 eligible = False
                 status_note = "BOUCLIER RSI (>75)"
@@ -763,6 +809,8 @@ class AutoTraderEngine:
                 "price": round(ev["price"], 2),
                 "prob_buy_pct": round(ev["prob_buy"] * 100.0, 1),
                 "score": ev["score"],
+                "wfa_pf": round(float(wfa_pf), 2) if wfa_pf is not None else None,
+                "wfa_sharpe": round(float(wfa_sharpe), 2) if wfa_sharpe is not None else None,
                 "trend": ev["trend_status"],
                 "rsi": ev["rsi_status"],
                 "status": status_note,
@@ -789,7 +837,7 @@ class AutoTraderEngine:
             if avail_cash <= 0:
                 break
 
-            target_alloc = min(equity * (cfg.position_size_pct / 100.0), avail_cash)
+            target_alloc = min(equity * (effective_pos_pct / 100.0), avail_cash)
             px = cand["price"]
             # Prévoir marge slippage + commission (0.2%)
             qty = int(target_alloc / (px * 1.002)) if px > 0 else 0
@@ -800,7 +848,7 @@ class AutoTraderEngine:
             atr_val = cand["atr"]
             buy_reason = (
                 f"🟢 Top Score {cand['score']:.1f}/100 | Prob IA {cand['prob_buy']*100:.1f}% | "
-                f"Tendance {cand['trend_status']}"
+                f"Alloc {effective_pos_pct:.1f}% ({market_regime_lbl})"
             )
 
             if cfg.dry_run:
@@ -1016,6 +1064,8 @@ class AutoTraderEngine:
                 "drawdown_pct": round(self._drawdown_pct, 2),
                 "drawdown_halted": self._drawdown_halted,
                 "last_vix": self._last_vix,
+                "market_regime": self._market_regime,
+                "effective_position_pct": self._effective_position_pct,
                 "trained_models_count": len(self._trained_models),
                 "trained_symbols": sorted(self._trained_models.keys()),
                 "last_rankings": list(self._last_rankings),

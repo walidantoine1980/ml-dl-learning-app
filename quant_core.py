@@ -669,6 +669,9 @@ def get_macro_data(period="2y", interval="1d"):
             return None
 
         macro = pd.DataFrame(index=spy.index)
+        macro['SPY_Close'] = spy
+        spy_sma200 = spy.rolling(window=min(200, max(20, len(spy) // 2)), min_periods=20).mean()
+        macro['SPY_Above_SMA200'] = np.where(spy >= spy_sma200, 1.0, 0.0)
         macro['SPY_Return'] = spy.pct_change()
         macro['SPY_Ret_5d'] = spy.pct_change(5)
         macro['SPY_Ret_20d'] = spy.pct_change(20)
@@ -700,8 +703,27 @@ def get_macro_data(period="2y", interval="1d"):
         return None
 
 
-def join_macro_data(df, macro_df):
-    """Jointure sécurisée des données macro + calcul de la Force Relative et du Beta glissant vs SPY."""
+def apply_alpha_vs_spy_target(df, horizon=5):
+    """
+    Cible 'Alpha pur vs SPY' (Surperformance relative sur `horizon` séances) :
+    - Target = 1.0 si rendement_futur_action(t -> t+h) > rendement_futur_SPY(t -> t+h)
+    - Target = 0.0 sinon
+    - Les `horizon` dernières bougies restent strictement NaN (zéro fuite future) et sont conservées.
+    """
+    df = df.copy()
+    h = max(1, int(horizon))
+    stock_fut = (df['Close'].shift(-h) / (df['Close'] + 1e-9)) - 1.0
+    if 'SPY_Close' in df.columns and (df['SPY_Close'] > 0).any():
+        spy_fut = (df['SPY_Close'].shift(-h) / (df['SPY_Close'] + 1e-9)) - 1.0
+        excess = stock_fut - spy_fut
+    else:
+        excess = stock_fut
+    df['Target'] = np.where(excess.isna(), np.nan, np.where(excess > 0.0, 1.0, 0.0))
+    return df
+
+
+def join_macro_data(df, macro_df, labeling_mode=None, alpha_horizon=5):
+    """Jointure sécurisée des données macro + calcul de la Force Relative, du Beta glissant et cible Alpha vs SPY optionnelle."""
     if macro_df is None:
         return df
     df = df.copy()
@@ -728,6 +750,9 @@ def join_macro_data(df, macro_df):
         joined['RS_vs_SPY_20d'] = joined['Ret_21d'] - joined['SPY_Ret_20d']
     if 'VIX' in joined.columns:
         joined['VIX_Change_5d'] = joined['VIX'].pct_change(5).replace([np.inf, -np.inf], 0.0).fillna(0.0).clip(-1.0, 2.0)
+
+    if labeling_mode == "alpha_spy":
+        joined = apply_alpha_vs_spy_target(joined, horizon=alpha_horizon)
 
     return joined
 

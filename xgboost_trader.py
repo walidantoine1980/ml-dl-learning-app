@@ -2772,6 +2772,34 @@ def page_auto_trading(sidebar_tickers=None, sidebar_csv_files=None):
             value=int(saved_cfg.cooldown_sec), step=30, key="auto_cfg_cooldown",
         )
 
+        st.markdown("**🎯 Qualité WFA & Sizing Adaptatif (Régime SPY / VIX)**")
+        q1, q2, q3, q4, q5 = st.columns(5)
+        use_wfa_quality_filter = q1.checkbox(
+            "Filtre Qualité WFA",
+            value=bool(saved_cfg.use_wfa_quality_filter),
+            key="auto_cfg_wfa_qual",
+            help="N'achète que les actions dont le modèle a été rentable en apprentissage (WFA).",
+        )
+        min_wfa_profit_factor = q2.number_input(
+            "Profit Factor Min", min_value=0.0, max_value=5.0,
+            value=float(saved_cfg.min_wfa_profit_factor), step=0.05, key="auto_cfg_min_pf",
+        )
+        min_wfa_sharpe = q3.number_input(
+            "Sharpe WFA Min", min_value=-2.0, max_value=3.0,
+            value=float(saved_cfg.min_wfa_sharpe), step=0.05, key="auto_cfg_min_sharpe",
+        )
+        use_adaptive_regime_sizing = q4.checkbox(
+            "Sizing Adaptatif SPY/VIX",
+            value=bool(saved_cfg.use_adaptive_regime_sizing),
+            key="auto_cfg_adapt_size",
+            help="Réduit automatiquement la taille des positions si VIX >= 20 ou SPY < SMA200.",
+        )
+        defensive_size_multiplier = q5.slider(
+            "Facteur Défensif", min_value=0.25, max_value=1.0,
+            value=float(saved_cfg.defensive_size_multiplier), step=0.05, key="auto_cfg_def_mult",
+            help="Ex: 0.50 divise par 2 la taille des achats en marché nerveux (15% -> 7.5%).",
+        )
+
     current_cfg = AutoTraderConfig(
         tickers=universe_symbols,
         csv_sources=all_csv_sources,
@@ -2791,6 +2819,11 @@ def page_auto_trading(sidebar_tickers=None, sidebar_csv_files=None):
         vix_max_threshold=float(vix_max_threshold),
         use_rsi_shield=bool(use_rsi_shield),
         use_sma200_filter=bool(use_sma200_filter),
+        use_wfa_quality_filter=bool(use_wfa_quality_filter),
+        min_wfa_profit_factor=float(min_wfa_profit_factor),
+        min_wfa_sharpe=float(min_wfa_sharpe),
+        use_adaptive_regime_sizing=bool(use_adaptive_regime_sizing),
+        defensive_size_multiplier=float(defensive_size_multiplier),
         max_drawdown_pct=float(max_drawdown_pct),
         cooldown_sec=int(cooldown_sec),
         dry_run=bool(dry_run),
@@ -2990,6 +3023,11 @@ def page_auto_trading(sidebar_tickers=None, sidebar_csv_files=None):
 
     if status.get("drawdown_halted"):
         st.error(f"🚨 Coupe-circuit Drawdown actif ({status['drawdown_pct']:.2f}%) : nouveaux achats suspendus.")
+    if status.get("market_regime"):
+        st.caption(
+            f"🏛️ **Régime de Marché (SPY/VIX)** : `{status['market_regime']}` • "
+            f"**Allocation effective / position** : `{status.get('effective_position_pct', position_size_pct):.1f}%`"
+        )
     if status.get("last_error"):
         st.warning(f"⚠️ Dernière erreur moteur : {status['last_error']}")
 
