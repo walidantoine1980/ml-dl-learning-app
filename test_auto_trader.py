@@ -405,6 +405,43 @@ class TestAutoTraderEngine(unittest.TestCase):
             mco_row = next(r for r in st_snap["last_rankings"] if r["symbol"] == "MCO")
             self.assertIn("QUALITÉ WFA", mco_row["status"])
 
+    def test_10_state_persistence_and_restore_after_restart(self):
+        """Vérifie que les transactions (trade_events, logs, PnL) sont restaurées après régénération de l'appli."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pf_path = os.path.join(tmpdir, "pf.json")
+            state_path = os.path.join(tmpdir, "auto_state.json")
+            save_portfolio({"cash": 100000.0, "positions": {}, "history": []}, filepath=pf_path, allow_reset=True)
+
+            # Vérifier aussi les nouvelles valeurs par défaut (capture utilisateur)
+            d = AutoTraderConfig()
+            self.assertEqual(d.scan_interval_sec, 3600)
+            self.assertEqual(d.min_wfa_profit_factor, 0.90)
+            self.assertEqual(d.min_wfa_sharpe, 0.0)
+            self.assertEqual(d.min_buy_prob, 0.52)
+
+            engine1 = AutoTraderEngine(
+                data_fetcher=lambda s, p, i: _make_ohlcv_df(100.0, final_price=100.0),
+                macro_fetcher=lambda p, i: None,
+                price_fetcher=lambda s: 100.0,
+                state_file=state_path,
+            )
+            engine1.config = AutoTraderConfig(
+                tickers=["AAPL"],
+                use_rsi_shield=False,
+                portfolio_path=pf_path,
+            )
+            engine1.register_models({"AAPL": _StubTrader(prob_value=0.70, sharpe=0.30, pf=1.25)})
+            engine1.run_single_cycle()
+            self.assertEqual(engine1.get_status()["total_buys"], 1)
+
+            # Simule un redémarrage complet / régénération de l'application (nouvelle instance)
+            engine2 = AutoTraderEngine(state_file=state_path)
+            st2 = engine2.get_status()
+            self.assertEqual(st2["total_buys"], 1, "Le compteur d'achats doit être restauré après redémarrage.")
+            self.assertEqual(len(st2["trade_events"]), 1, "Les transactions Autopilot doivent être restaurées.")
+            self.assertEqual(st2["trade_events"][0]["ticker"], "AAPL")
+            self.assertGreaterEqual(st2["cycle_count"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

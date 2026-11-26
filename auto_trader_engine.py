@@ -47,23 +47,43 @@ from quant_core import (
 )
 from tickers_db import parse_and_validate_watchlist_csv
 
-def _get_persistent_runtime_file(filename: str) -> str:
-    """
-    Résout un chemin persistant pour la configuration et l'état du mode automatique.
-    Priorité : variable d'environnement XGBOOST_PORTFOLIO_DIR (ex: /app/data en Docker),
-    puis dossier local ./data/ (volume persistant Docker), avec création automatique du dossier.
-    """
+def _get_persistent_runtime_dirs() -> List[str]:
+    """Retourne les dossiers persistants (Docker /app/data + profil utilisateur ~/.xgboost_trader)."""
+    dirs: List[str] = []
     env_dir = os.environ.get("XGBOOST_PORTFOLIO_DIR", "").strip()
     if env_dir:
-        target_dir = os.path.abspath(env_dir)
-    else:
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        target_dir = os.path.join(base_dir, "data")
+        dirs.append(os.path.abspath(env_dir))
     try:
-        os.makedirs(target_dir, exist_ok=True)
-        return os.path.join(target_dir, filename)
+        user_home = os.path.expanduser("~")
+        if user_home and user_home != "~":
+            dirs.append(os.path.join(user_home, ".xgboost_trader"))
     except Exception:
-        return filename
+        pass
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    dirs.append(os.path.join(base_dir, "data"))
+
+    unique: List[str] = []
+    seen = set()
+    for d in dirs:
+        norm = os.path.normcase(os.path.abspath(d))
+        if norm not in seen:
+            seen.add(norm)
+            unique.append(os.path.abspath(d))
+    return unique
+
+
+def _get_persistent_runtime_file(filename: str) -> str:
+    """
+    Résout le chemin principal persistant pour la configuration et l'état du mode automatique.
+    Priorité : XGBOOST_PORTFOLIO_DIR (ex: /app/data en Docker), puis ~/.xgboost_trader, puis ./data/.
+    """
+    for target_dir in _get_persistent_runtime_dirs():
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+            return os.path.join(target_dir, filename)
+        except Exception:
+            continue
+    return filename
 
 
 AUTO_TRADER_STATE_FILE = _get_persistent_runtime_file("auto_trader_state.json")
@@ -174,7 +194,7 @@ class AutoTraderConfig:
     tickers: List[str] = field(default_factory=list)
     csv_sources: List[str] = field(default_factory=list)
     # Cadence et capacité du portefeuille
-    scan_interval_sec: int = 300
+    scan_interval_sec: int = 3600
     max_open_positions: int = 5
     position_size_pct: float = 15.0
     min_cash_reserve_pct: float = 10.0
@@ -195,7 +215,7 @@ class AutoTraderConfig:
     use_sma200_filter: bool = False
     # Point 1 : Filtre Qualité WFA (n'achète que les modèles rentables en apprentissage)
     use_wfa_quality_filter: bool = True
-    min_wfa_profit_factor: float = 1.0
+    min_wfa_profit_factor: float = 0.90
     min_wfa_sharpe: float = 0.0
     # Point 2 : Sizing adaptatif au régime de marché (SPY & VIX)
     use_adaptive_regime_sizing: bool = True
@@ -223,28 +243,50 @@ class AutoTraderConfig:
 
 
 def save_auto_trader_config(config: AutoTraderConfig, filepath: str = AUTO_TRADER_CONFIG_FILE) -> None:
-    """Sauvegarde atomique de la configuration du mode automatique."""
-    parent = os.path.dirname(os.path.abspath(filepath))
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    tmp_path = f"{filepath}.tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(config.to_dict(), f, indent=2, ensure_ascii=False)
-    os.replace(tmp_path, filepath)
+    """Sauvegarde atomique multi-emplacements de la configuration du mode automatique."""
+    targets = [filepath]
+    if filepath == AUTO_TRADER_CONFIG_FILE:
+        for d in _get_persistent_runtime_dirs():
+            p = os.path.join(d, "auto_trader_config.json")
+            if os.path.normcase(os.path.abspath(p)) != os.path.normcase(os.path.abspath(filepath)):
+                targets.append(p)
+    payload = config.to_dict()
+    for target in targets:
+        try:
+            parent = os.path.dirname(os.path.abspath(target))
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            tmp_path = f"{target}.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, ensure_ascii=False)
+            os.replace(tmp_path, target)
+        except Exception:
+            pass
 
 
 def load_auto_trader_config(filepath: str = AUTO_TRADER_CONFIG_FILE) -> AutoTraderConfig:
-    """Charge la configuration sauvegardée du mode automatique (avec repli racine legacy)."""
+    """Charge la configuration sauvegardée la plus récente parmi les emplacements persistants."""
     candidates = [filepath]
     if filepath == AUTO_TRADER_CONFIG_FILE:
+        for d in _get_persistent_runtime_dirs():
+            candidates.append(os.path.join(d, "auto_trader_config.json"))
         candidates.append("auto_trader_config.json")
+
+    best_data = None
+    best_mtime = -1.0
     for path in candidates:
         if path and os.path.exists(path):
             try:
+                mtime = os.path.getmtime(path)
                 with open(path, "r", encoding="utf-8") as f:
-                    return AutoTraderConfig.from_dict(json.load(f))
+                    data = json.load(f)
+                if isinstance(data, dict) and mtime >= best_mtime:
+                    best_mtime = mtime
+                    best_data = data
             except Exception:
-                pass
+                continue
+    if best_data is not None:
+        return AutoTraderConfig.from_dict(best_data)
     return AutoTraderConfig()
 
 
@@ -304,6 +346,8 @@ class AutoTraderEngine:
         self._logs: List[Dict[str, Any]] = []
         self._trade_events: List[Dict[str, Any]] = []
         self._equity_history: List[Dict[str, Any]] = []
+        # Restaure automatiquement les transactions, logs et métriques après redémarrage/régénération
+        self._restore_state()
 
     # -------------------------------------------------------------------------
     # Fetchers par défaut (yfinance + quant_core)
@@ -389,20 +433,83 @@ class AutoTraderEngine:
             if len(self._trade_events) > 500:
                 self._trade_events = self._trade_events[-500:]
 
-    def _persist_state(self) -> None:
+    def _restore_state(self) -> None:
+        """Restaure l'historique des transactions, logs et métriques depuis le stockage persistant."""
         if not self._state_file:
             return
-        try:
-            parent = os.path.dirname(os.path.abspath(self._state_file))
-            if parent:
-                os.makedirs(parent, exist_ok=True)
-            snap = self.get_status()
-            tmp_path = f"{self._state_file}.tmp"
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(snap, f, indent=2, ensure_ascii=False, default=str)
-            os.replace(tmp_path, self._state_file)
-        except Exception:
-            pass
+        candidates = [self._state_file]
+        if self._state_file == AUTO_TRADER_STATE_FILE:
+            for d in _get_persistent_runtime_dirs():
+                candidates.append(os.path.join(d, "auto_trader_state.json"))
+            candidates.append("auto_trader_state.json")
+
+        best_snap = None
+        best_score = (-1, -1.0)
+        for path in candidates:
+            if not path or not os.path.exists(path):
+                continue
+            try:
+                mtime = os.path.getmtime(path)
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if not isinstance(data, dict):
+                    continue
+                ev_count = len(data.get("trade_events", []) or [])
+                score = (ev_count, mtime)
+                if score > best_score:
+                    best_score = score
+                    best_snap = data
+            except Exception:
+                continue
+
+        if not best_snap:
+            return
+
+        with self._lock:
+            self._cycle_count = int(best_snap.get("cycle_count", 0) or 0)
+            self._total_buys = int(best_snap.get("total_buys", 0) or 0)
+            self._total_sells = int(best_snap.get("total_sells", 0) or 0)
+            self._realized_pnl = float(best_snap.get("realized_pnl", 0.0) or 0.0)
+            self._peak_equity = float(best_snap.get("peak_equity", 0.0) or 0.0)
+            self._current_equity = float(best_snap.get("current_equity", 0.0) or 0.0)
+            self._drawdown_pct = float(best_snap.get("drawdown_pct", 0.0) or 0.0)
+            self._last_cycle_at = best_snap.get("last_cycle_at")
+            self._last_vix = best_snap.get("last_vix")
+            if best_snap.get("market_regime"):
+                self._market_regime = str(best_snap["market_regime"])
+            if best_snap.get("effective_position_pct") is not None:
+                self._effective_position_pct = float(best_snap["effective_position_pct"])
+            if isinstance(best_snap.get("last_rankings"), list):
+                self._last_rankings = list(best_snap["last_rankings"])[-50:]
+            if isinstance(best_snap.get("logs"), list):
+                self._logs = list(best_snap["logs"])[-300:]
+            if isinstance(best_snap.get("trade_events"), list):
+                self._trade_events = list(best_snap["trade_events"])[-500:]
+            if isinstance(best_snap.get("equity_history"), list):
+                self._equity_history = list(best_snap["equity_history"])[-500:]
+
+    def _persist_state(self) -> None:
+        """Sauvegarde atomique multi-emplacements des transactions et de l'état Autopilot."""
+        if not self._state_file:
+            return
+        targets = [self._state_file]
+        if self._state_file == AUTO_TRADER_STATE_FILE:
+            for d in _get_persistent_runtime_dirs():
+                p = os.path.join(d, "auto_trader_state.json")
+                if os.path.normcase(os.path.abspath(p)) != os.path.normcase(os.path.abspath(self._state_file)):
+                    targets.append(p)
+        snap = self.get_status()
+        for target in targets:
+            try:
+                parent = os.path.dirname(os.path.abspath(target))
+                if parent:
+                    os.makedirs(parent, exist_ok=True)
+                tmp_path = f"{target}.tmp"
+                with open(tmp_path, "w", encoding="utf-8") as f:
+                    json.dump(snap, f, indent=2, ensure_ascii=False, default=str)
+                os.replace(tmp_path, target)
+            except Exception:
+                pass
 
     # -------------------------------------------------------------------------
     # Accès portefeuille (respecte portfolio_path si fourni pour les tests)
