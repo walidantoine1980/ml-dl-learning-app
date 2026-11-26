@@ -2366,6 +2366,260 @@ def _fetch_live_price_fast(symbol):
     return None
 
 
+def _extract_technical_snapshot(sym, df, trader=None, prob_buy=None):
+    """Extrait un instantané propre des indicateurs techniques clés sur la dernière bougie t."""
+    if df is None or df.empty:
+        return None
+    row = df.iloc[-1]
+
+    def _f(col, mult=1.0, digits=2):
+        if col not in df.columns:
+            return None
+        val = row[col]
+        if pd.isna(val):
+            return None
+        try:
+            return round(float(val) * mult, digits)
+        except Exception:
+            return None
+
+    close_v = _f("Close", 1.0, 2)
+    sma200_ratio = _f("SMA_200_Ratio", 100.0, 2)
+    rsi_v = _f("RSI", 1.0, 1)
+    bb_width = _f("BB_Width", 100.0, 2)
+
+    if sma200_ratio is not None:
+        trend_lbl = "🟢 Haussier" if sma200_ratio >= 0 else "🔴 Baissier"
+    else:
+        trend_lbl = "⚪ N/A"
+
+    if rsi_v is not None:
+        if rsi_v > 75:
+            rsi_zone = "🔴 Surachat (>75)"
+        elif rsi_v < 30:
+            rsi_zone = "🟢 Survente (<30)"
+        else:
+            rsi_zone = "⚪ Neutre"
+    else:
+        rsi_zone = "⚪ N/A"
+
+    sharpe_v = None
+    pf_v = None
+    if trader is not None and isinstance(getattr(trader, "advanced_metrics", None), dict):
+        s_raw = trader.advanced_metrics.get("Sharpe Ratio")
+        p_raw = trader.advanced_metrics.get("Profit Factor")
+        if s_raw is not None:
+            sharpe_v = round(float(s_raw), 2)
+        if p_raw is not None:
+            pf_v = round(float(p_raw), 2)
+
+    return {
+        "Symbole": sym,
+        "Nom": get_company_name_from_yahoo(sym),
+        "Cours ($)": close_v,
+        "Tendance SMA200": trend_lbl,
+        "Écart SMA20 (%)": _f("SMA_20_Ratio", 100.0, 2),
+        "Écart SMA50 (%)": _f("SMA_50_Ratio", 100.0, 2),
+        "Écart SMA200 (%)": sma200_ratio,
+        "RSI (14)": rsi_v,
+        "Zone RSI": rsi_zone,
+        "MACD Hist": _f("MACD_Hist", 100.0, 3),
+        "Bollinger %B": _f("BB_Percent", 100.0, 1),
+        "BB Width (%)": bb_width,
+        "ADX (14)": _f("ADX", 1.0, 1),
+        "DI Diff (+DI/-DI)": _f("DI_Diff", 1.0, 1),
+        "Kaufman ER": _f("ER_10", 1.0, 2),
+        "NATR (%)": _f("NATR", 100.0, 2),
+        "Volume Ratio": _f("Volume_Ratio", 1.0, 2),
+        "CMF (20)": _f("CMF_20", 1.0, 2),
+        "Donchian 20j (%)": _f("Donchian_Pos_20", 100.0, 1),
+        "Dist. 52s (%)": _f("Dist_High_52w", 100.0, 1),
+        "RS vs SPY 20j (%)": _f("RS_vs_SPY_20d", 100.0, 2),
+        "Prob. Achat (%)": round(float(prob_buy) * 100.0, 1) if prob_buy is not None else None,
+        "Sharpe WFA": sharpe_v,
+        "PF WFA": pf_v,
+    }
+
+
+def _render_technical_inspector_body(universe_symbols=None, period="5y", interval="1d", labeling_mode="triple_barrier"):
+    """Contenu de la fenêtre modale d'inspection technique multi-actions (RSI, SMA, Bollinger...)."""
+    top_c1, top_c2, top_c3 = st.columns([3, 1.5, 1.3])
+    with top_c1:
+        st.caption(
+            "Vue synthétique des indicateurs techniques calculés lors de l'apprentissage WFA "
+            "(Tendance SMA, Momentum RSI/MACD, Volatilité Bollinger/NATR, Flux CMF/Volume & Score IA)."
+        )
+    with top_c2:
+        if universe_symbols and st.button("🔄 Rafraîchir depuis Yahoo", use_container_width=True, key="tech_insp_refresh"):
+            refreshed = []
+            prog = st.progress(0.0, text="Actualisation des indicateurs techniques...")
+            macro_df = get_macro_data(period, interval)
+            for idx_s, sym in enumerate(universe_symbols):
+                prog.progress((idx_s + 1) / max(len(universe_symbols), 1), text=f"Calcul indicateurs : {sym}...")
+                try:
+                    df_raw = yf.download(sym, period=period, interval=interval, progress=False)
+                    if df_raw is None or df_raw.empty or len(df_raw) < 30:
+                        continue
+                    if isinstance(df_raw.columns, pd.MultiIndex):
+                        df_raw.columns = df_raw.columns.droplevel(1)
+                    df_raw = df_raw.loc[:, ~df_raw.columns.duplicated()].copy()
+                    df_ind = add_features(df_raw, labeling_mode=labeling_mode)
+                    if macro_df is not None:
+                        df_ind = join_macro_data(df_ind, macro_df)
+                    tr = st.session_state.get(f"auto_trader_model_{sym}")
+                    pb = None
+                    if tr is not None and getattr(tr, "is_trained", False):
+                        pb = tr.predict(df_ind.iloc[-1:], tr.get_feature_list(df_ind))
+                    snap = _extract_technical_snapshot(sym, df_ind, trader=tr, prob_buy=pb)
+                    if snap:
+                        refreshed.append(snap)
+                except Exception:
+                    continue
+            prog.empty()
+            if refreshed:
+                st.session_state["auto_training_indicators"] = refreshed
+                st.rerun()
+    with top_c3:
+        if st.button("⬅️ Retour au Trading", type="primary", use_container_width=True, key="tech_insp_back_top"):
+            st.session_state["tech_inspector_open"] = False
+            st.rerun()
+
+    rows = st.session_state.get("auto_training_indicators", [])
+    if not rows:
+        st.info("Aucun indicateur en mémoire. Lancez l'apprentissage WFA ou cliquez sur **🔄 Rafraîchir depuis Yahoo** ci-dessus.")
+        return
+
+    df_all = pd.DataFrame(rows)
+
+    # KPIs globaux de l'univers analysé
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Actions analysées", len(df_all))
+    n_bull = int((df_all["Écart SMA200 (%)"].fillna(-1) >= 0).sum()) if "Écart SMA200 (%)" in df_all else 0
+    n_ob = int((df_all["RSI (14)"].fillna(50) > 75).sum()) if "RSI (14)" in df_all else 0
+    n_os = int((df_all["RSI (14)"].fillna(50) < 30).sum()) if "RSI (14)" in df_all else 0
+    n_sq = int((df_all["BB Width (%)"].fillna(99) < 6.0).sum()) if "BB Width (%)" in df_all else 0
+    m2.metric("Haussières (> SMA200)", f"{n_bull} / {len(df_all)}")
+    m3.metric("Surachat (RSI > 75)", n_ob)
+    m4.metric("Survente (RSI < 30)", n_os)
+    m5.metric("Bollinger Squeeze (<6%)", n_sq)
+
+    # Filtres rapides d'expert
+    f1, f2, f3, f4 = st.columns([2, 1.3, 1.3, 1.4])
+    search_sym = f1.text_input("🔎 Filtrer par symbole ou nom", value="", key="tech_insp_search")
+    only_bull = f2.checkbox("Haussier (> SMA200)", value=False, key="tech_insp_only_bull")
+    only_safe_rsi = f3.checkbox("RSI ≤ 75 (hors surachat)", value=False, key="tech_insp_safe_rsi")
+    only_good_wfa = f4.checkbox("Qualité WFA (PF ≥ 1.0)", value=False, key="tech_insp_good_wfa")
+
+    df_view = df_all.copy()
+    if search_sym.strip():
+        q = search_sym.strip().lower()
+        df_view = df_view[
+            df_view["Symbole"].astype(str).str.lower().str.contains(q, na=False)
+            | df_view["Nom"].astype(str).str.lower().str.contains(q, na=False)
+        ]
+    if only_bull and "Écart SMA200 (%)" in df_view:
+        df_view = df_view[df_view["Écart SMA200 (%)"].fillna(-999) >= 0]
+    if only_safe_rsi and "RSI (14)" in df_view:
+        df_view = df_view[df_view["RSI (14)"].fillna(50) <= 75]
+    if only_good_wfa and "PF WFA" in df_view:
+        df_view = df_view[df_view["PF WFA"].fillna(0) >= 1.0]
+
+    tab_tbl, tab_chart = st.tabs(["📋 Tableau Complet des Indicateurs", "📊 Carte RSI vs Probabilité IA & Bollinger"])
+
+    with tab_tbl:
+        if not df_view.empty:
+            def _style_rsi(val):
+                try:
+                    v = float(val)
+                    if v > 75:
+                        return "color: #ff4b4b; font-weight: 700;"
+                    if v < 30:
+                        return "color: #00ff88; font-weight: 700;"
+                except Exception:
+                    pass
+                return ""
+
+            def _style_sign(val):
+                try:
+                    v = float(val)
+                    if v > 0:
+                        return "color: #00ff88;"
+                    if v < 0:
+                        return "color: #ff4b4b;"
+                except Exception:
+                    pass
+                return ""
+
+            styler = df_view.style
+            if hasattr(styler, "map"):
+                styler = styler.map(_style_rsi, subset=["RSI (14)"])
+                styler = styler.map(_style_sign, subset=["Écart SMA200 (%)", "RS vs SPY 20j (%)", "Sharpe WFA"])
+            st.dataframe(styler, use_container_width=True, hide_index=True, height=420)
+            st.download_button(
+                "📥 Exporter tous les Indicateurs Techniques (CSV)",
+                data=df_view.to_csv(index=False).encode("utf-8"),
+                file_name="indicateurs_techniques_wfa.csv",
+                mime="text/csv",
+                key="tech_insp_dl_csv",
+            )
+        else:
+            st.warning("Aucune action ne correspond aux filtres sélectionnés.")
+
+    with tab_chart:
+        plot_df = df_view.dropna(subset=["RSI (14)", "Prob. Achat (%)"]).copy()
+        if not plot_df.empty:
+            color_col = "PF WFA" if "PF WFA" in plot_df.columns and plot_df["PF WFA"].notna().any() else "Écart SMA200 (%)"
+            fig_sc = go.Figure()
+            fig_sc.add_trace(go.Scatter(
+                x=plot_df["RSI (14)"],
+                y=plot_df["Prob. Achat (%)"],
+                mode="markers+text",
+                text=plot_df["Symbole"],
+                textposition="top center",
+                marker=dict(
+                    size=13,
+                    color=plot_df[color_col].fillna(0.0),
+                    colorscale="RdYlGn",
+                    showscale=True,
+                    colorbar=dict(title=color_col),
+                    line=dict(color="white", width=1),
+                ),
+                hovertemplate=(
+                    "<b>%{text}</b><br>"
+                    "RSI (14): %{x:.1f}<br>"
+                    "Prob. Achat IA: %{y:.1f}%<br>"
+                    f"{color_col}: %{{marker.color:.2f}}<extra></extra>"
+                ),
+            ))
+            fig_sc.add_vline(x=75, line_dash="dash", line_color="#ff4b4b", annotation_text="Surachat (RSI 75)")
+            fig_sc.add_vline(x=30, line_dash="dash", line_color="#00ff88", annotation_text="Survente (RSI 30)")
+            fig_sc.add_hline(y=52, line_dash="dot", line_color="#00d2ff", annotation_text="Seuil Achat 52%")
+            fig_sc.update_layout(
+                title="Carte d'Opportunités : RSI (14) vs Probabilité d'Achat IA (%)",
+                xaxis_title="RSI (14)",
+                yaxis_title="Probabilité d'Achat IA (%)",
+                template="plotly_dark",
+                height=420,
+            )
+            st.plotly_chart(fig_sc, use_container_width=True)
+        else:
+            st.info("Données insuffisantes pour afficher le graphique RSI vs Probabilité IA.")
+
+    st.divider()
+    if st.button("⬅️ Retour au Trading", use_container_width=True, key="tech_insp_back_bottom"):
+        st.session_state["tech_inspector_open"] = False
+        st.rerun()
+
+
+if hasattr(st, "dialog"):
+    @st.dialog("🔬 Inspecteur Technique Multi-Actions (RSI, SMA, Bollinger...)", width="large")
+    def _technical_inspector_modal(universe_symbols=None, period="5y", interval="1d", labeling_mode="triple_barrier"):
+        _render_technical_inspector_body(universe_symbols, period, interval, labeling_mode)
+else:
+    def _technical_inspector_modal(universe_symbols=None, period="5y", interval="1d", labeling_mode="triple_barrier"):
+        st.session_state["tech_inspector_open"] = True
+
+
 # =============================================================================
 # MODULE : MODE TRADING AUTOMATIQUE EN BOUCLE (AUTOPILOT)
 # =============================================================================
@@ -2575,6 +2829,7 @@ def page_auto_trading(sidebar_tickers=None, sidebar_csv_files=None):
     if launch_training and universe_symbols:
         os.makedirs("models", exist_ok=True)
         trained_summary = []
+        indicators_snapshots = []
         newly_trained = {}
         progress_bar = st.progress(0.0, text="Initialisation de l'apprentissage...")
         macro_df = get_macro_data(auto_period, auto_interval)
@@ -2656,6 +2911,9 @@ def page_auto_trading(sidebar_tickers=None, sidebar_csv_files=None):
                 newly_trained[sym] = trader
 
                 last_prob = trader.predict(df.iloc[-1:], features)
+                snap_ind = _extract_technical_snapshot(sym, df, trader=trader, prob_buy=last_prob)
+                if snap_ind is not None:
+                    indicators_snapshots.append(snap_ind)
                 trained_summary.append({
                     "Symbole": sym,
                     "Nom": get_company_name_from_yahoo(sym),
@@ -2677,6 +2935,8 @@ def page_auto_trading(sidebar_tickers=None, sidebar_csv_files=None):
         if newly_trained:
             engine.register_models(newly_trained)
             st.session_state["auto_training_summary"] = trained_summary
+            if indicators_snapshots:
+                st.session_state["auto_training_indicators"] = indicators_snapshots
             st.success(f"✅ {len(newly_trained)}/{len(universe_symbols)} modèle(s) entraîné(s) et prêt(s) pour le Mode Automatique !")
             ready_symbols = sorted(set(ready_symbols).union(newly_trained.keys()))
         else:
@@ -2685,6 +2945,23 @@ def page_auto_trading(sidebar_tickers=None, sidebar_csv_files=None):
     if st.session_state.get("auto_training_summary"):
         with st.expander("📊 Résultats du dernier apprentissage", expanded=True):
             st.dataframe(pd.DataFrame(st.session_state["auto_training_summary"]), use_container_width=True, hide_index=True)
+
+    # Bouton dédié d'ouverture de la fenêtre modale d'inspection technique (RSI, SMA, Bollinger...)
+    if st.session_state.get("auto_training_indicators") or len(ready_symbols) > 0:
+        if st.button(
+            "🔬 Visualiser les Indicateurs Techniques (RSI, SMA, Bollinger, ADX, MACD...)",
+            use_container_width=True,
+            key="btn_open_tech_inspector",
+            help="Ouvre une fenêtre dédiée avec tous les indicateurs techniques des actions entraînées et un bouton Retour au Trading.",
+        ):
+            if hasattr(st, "dialog"):
+                _technical_inspector_modal(universe_symbols, auto_period, auto_interval, auto_labeling_mode)
+            else:
+                st.session_state["tech_inspector_open"] = True
+
+    if not hasattr(st, "dialog") and st.session_state.get("tech_inspector_open", False):
+        with st.expander("🔬 Inspecteur Technique Multi-Actions (RSI, SMA, Bollinger...)", expanded=True):
+            _render_technical_inspector_body(universe_symbols, auto_period, auto_interval, auto_labeling_mode)
 
     st.divider()
 
