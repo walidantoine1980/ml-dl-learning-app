@@ -3191,23 +3191,35 @@ def page_auto_trading(sidebar_tickers=None, sidebar_csv_files=None):
                 st.toast("Configuration Autopilot sauvegardée !", icon="💾")
 
     with b4:
-        if st.button(
-            "⚡ Exécuter 1 Cycle",
-            use_container_width=True,
-            disabled=(len(ready_symbols) == 0 or status["is_running"]),
-            key="btn_single_cycle_autopilot",
-            help="Lance un cycle unique (Vente -> Sélection -> Achat) pour tester la configuration.",
-        ):
-            save_auto_trader_config(current_cfg)
-            engine.config = current_cfg
-            engine.register_models(session_models)
-            with st.spinner("Exécution d'un cycle complet d'analyse et d'ordres..."):
-                report = engine.run_single_cycle()
-            st.success(
-                f"Cycle #{report['cycle']} terminé : {len(report['sells'])} vente(s), "
-                f"{len(report['buys'])} achat(s) | Équité : {report['equity']:,.2f} $"
-            )
-            st.rerun()
+        if status["is_running"]:
+            if st.button(
+                "💾 Appliquer à chaud",
+                use_container_width=True,
+                key="btn_hot_apply_autopilot_cfg",
+                help="Applique immédiatement les nouveaux paramètres (Positions max, TP, SL, seuils IA...) au robot en cours sans l'arrêter.",
+            ):
+                save_auto_trader_config(current_cfg)
+                engine.update_config(current_cfg)
+                st.toast("Paramètres appliqués à chaud au moteur actif !", icon="✅")
+                st.rerun()
+        else:
+            if st.button(
+                "⚡ Exécuter 1 Cycle",
+                use_container_width=True,
+                disabled=(len(ready_symbols) == 0),
+                key="btn_single_cycle_autopilot",
+                help="Lance un cycle unique (Vente -> Sélection -> Achat) pour tester la configuration.",
+            ):
+                save_auto_trader_config(current_cfg)
+                engine.config = current_cfg
+                engine.register_models(session_models)
+                with st.spinner("Exécution d'un cycle complet d'analyse et d'ordres..."):
+                    report = engine.run_single_cycle()
+                st.success(
+                    f"Cycle #{report['cycle']} terminé : {len(report['sells'])} vente(s), "
+                    f"{len(report['buys'])} achat(s) | Équité : {report['equity']:,.2f} $"
+                )
+                st.rerun()
 
     with b5:
         if st.button("🔄 Actualiser", use_container_width=True, key="btn_refresh_autopilot"):
@@ -3821,6 +3833,12 @@ def main():
         load_options_portfolio()
         st.session_state["portfolios_synced"] = True
 
+    st.sidebar.markdown(
+        "<div style='font-size: 1.55rem; font-weight: 800; color: #0B6623; "
+        "letter-spacing: 0.3px; margin-bottom: 0.35rem; line-height: 1.2;'>"
+        "Robot Trader Aoun</div>",
+        unsafe_allow_html=True,
+    )
     st.sidebar.title("🧭 Menu Principal")
 
     # Indicateur temps réel & Bouton STOP d'urgence du Mode Automatique visible partout

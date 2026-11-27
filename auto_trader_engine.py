@@ -195,7 +195,7 @@ class AutoTraderConfig:
     csv_sources: List[str] = field(default_factory=list)
     # Cadence et capacité du portefeuille
     scan_interval_sec: int = 3600
-    max_open_positions: int = 5
+    max_open_positions: int = 10
     position_size_pct: float = 15.0
     min_cash_reserve_pct: float = 10.0
     # Seuils de décision IA (consomment la prédiction du modèle sans toucher aux stratégies)
@@ -1012,14 +1012,15 @@ class AutoTraderEngine:
             if avail_cash <= 0:
                 break
 
+            sym = cand["symbol"]
             target_alloc = min(equity * (effective_pos_pct / 100.0), avail_cash)
-            px = cand["price"]
+            live_buy_px = self._price_fetcher(sym) if cfg.use_live_intraday_price else None
+            px = float(live_buy_px) if (live_buy_px is not None and float(live_buy_px) > 0) else cand["price"]
             # Prévoir marge slippage + commission (0.2%)
             qty = int(target_alloc / (px * 1.002)) if px > 0 else 0
             if qty <= 0:
                 continue
 
-            sym = cand["symbol"]
             atr_val = cand["atr"]
             buy_reason = (
                 f"🟢 Top Score {cand['score']:.1f}/100 | Prob IA {cand['prob_buy']*100:.1f}% | "
@@ -1177,6 +1178,18 @@ class AutoTraderEngine:
         """Reprend la boucle après une pause."""
         self._pause_event.clear()
         self._log("SYSTEM", "▶️ Mode Automatique repris.")
+        self._persist_state()
+
+    def update_config(self, config: AutoTraderConfig) -> None:
+        """Met à jour la configuration du moteur à chaud sans interrompre la boucle."""
+        with self._lock:
+            self.config = config
+        self._log(
+            "SYSTEM",
+            f"⚙️ Configuration mise à jour à chaud (Max pos={config.max_open_positions}, "
+            f"TP={config.take_profit_pct:.1f}%, SL={config.stop_loss_pct:.1f}%, "
+            f"Vente IA<={config.sell_prob_threshold*100:.0f}%).",
+        )
         self._persist_state()
 
     def emergency_liquidate_all(self) -> Tuple[int, float, str]:
