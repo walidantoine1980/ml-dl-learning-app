@@ -10,35 +10,47 @@ import threading
 import subprocess
 
 def pipe(source, target):
+    """Transfère les octets de source vers target en préservant le half-close TCP (SHUT_WR)."""
     try:
         while True:
-            data = source.recv(8192)
+            data = source.recv(65536)
             if not data:
                 break
             target.sendall(data)
     except Exception:
         pass
     finally:
+        # Half-close uniquement le sens écriture vers target : ne ferme pas le socket retour !
         try:
-            source.close()
-        except Exception:
-            pass
-        try:
-            target.close()
+            target.shutdown(socket.SHUT_WR)
         except Exception:
             pass
 
 def forward_connection(client_conn, target_port):
+    target_conn = None
+    try:
+        client_conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except Exception:
+        pass
     try:
         target_conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        target_conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         target_conn.connect(('127.0.0.1', target_port))
-        threading.Thread(target=pipe, args=(client_conn, target_conn), daemon=True).start()
-        threading.Thread(target=pipe, args=(target_conn, client_conn), daemon=True).start()
+        t1 = threading.Thread(target=pipe, args=(client_conn, target_conn), daemon=True)
+        t2 = threading.Thread(target=pipe, args=(target_conn, client_conn), daemon=True)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
     except Exception:
-        try:
-            client_conn.close()
-        except Exception:
-            pass
+        pass
+    finally:
+        for conn in (client_conn, target_conn):
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
 def start_secondary_listener(proxy_port, target_port):
     try:

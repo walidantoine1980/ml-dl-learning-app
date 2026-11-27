@@ -418,6 +418,13 @@ class TestAutoTraderEngine(unittest.TestCase):
             self.assertEqual(d.min_wfa_profit_factor, 0.90)
             self.assertEqual(d.min_wfa_sharpe, 0.0)
             self.assertEqual(d.min_buy_prob, 0.52)
+            self.assertEqual(d.take_profit_pct, 3.0)
+            self.assertEqual(d.sell_prob_threshold, 0.50)
+            self.assertTrue(d.use_live_intraday_price)
+            self.assertEqual(d.trailing_atr_mult, 1.25)
+            self.assertEqual(d.trailing_stop_pct, 1.5)
+            self.assertTrue(d.use_partial_take_profit)
+            self.assertEqual(d.partial_take_profit_pct, 1.5)
 
             engine1 = AutoTraderEngine(
                 data_fetcher=lambda s, p, i: _make_ohlcv_df(100.0, final_price=100.0),
@@ -441,6 +448,82 @@ class TestAutoTraderEngine(unittest.TestCase):
             self.assertEqual(len(st2["trade_events"]), 1, "Les transactions Autopilot doivent être restaurées.")
             self.assertEqual(st2["trade_events"][0]["ticker"], "AAPL")
             self.assertGreaterEqual(st2["cycle_count"], 1)
+
+    def test_11_live_intraday_price_partial_tp_and_tight_trailing_stop(self):
+        """Vérifie le prix live intraday (Point 1), la prise de profit partielle et le trailing stop serré (Point 2)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pf_path = os.path.join(tmpdir, "pf.json")
+            state_path = os.path.join(tmpdir, "state_11.json")
+            save_portfolio(
+                {
+                    "cash": 90000.0,
+                    "positions": {
+                        "AAPL": {"qty": 10, "avg_price": 100.0, "stop_loss": 96.0, "take_profit": 110.0},
+                        "MSFT": {"qty": 10, "avg_price": 200.0, "stop_loss": 192.0, "take_profit": 220.0},
+                    },
+                    "history": [],
+                },
+                filepath=pf_path,
+                allow_reset=True,
+            )
+
+            # Close journalier figé à 100 / 200, mais prix live intraday qui bouge !
+            live_prices = {"AAPL": 101.8, "MSFT": 206.5}
+            stubs = {
+                "AAPL": _StubTrader(prob_value=0.65),
+                "MSFT": _StubTrader(prob_value=0.65),
+            }
+
+            engine = AutoTraderEngine(
+                data_fetcher=lambda s, p, i: _make_ohlcv_df(base_price=100.0 if s == "AAPL" else 200.0, final_price=100.0 if s == "AAPL" else 200.0),
+                macro_fetcher=lambda p, i: None,
+                price_fetcher=lambda s: live_prices[s],
+                state_file=state_path,
+            )
+            engine.config = AutoTraderConfig(
+                tickers=["AAPL", "MSFT"],
+                use_live_intraday_price=True,
+                take_profit_pct=3.0,
+                sell_prob_threshold=0.50,
+                use_trailing_stop=True,
+                trailing_stop_pct=1.5,
+                trailing_atr_mult=1.25,
+                use_partial_take_profit=True,
+                partial_take_profit_pct=1.5,
+                partial_take_profit_ratio=0.50,
+                min_buy_prob=0.95,  # Pas de rachat pour isoler les ventes
+                portfolio_path=pf_path,
+            )
+            engine.register_models(stubs)
+
+            # CYCLE 1 :
+            # - MSFT prix live = 206.5 (+3.25% >= TP 3%) -> Vente totale grâce au prix live intraday !
+            # - AAPL prix live = 101.8 (+1.8% >= TP partiel 1.5%, < TP 3%) -> Vente partielle 50% (5 actions) + SL au PRU
+            r1 = engine.run_single_cycle()
+            self.assertEqual(len(r1["sells"]), 2)
+            pf1 = load_portfolio(filepath=pf_path)
+            self.assertNotIn("MSFT", pf1["positions"], "MSFT doit être vendue totalement sur prix live +3.25%.")
+            self.assertIn("AAPL", pf1["positions"])
+            self.assertEqual(pf1["positions"]["AAPL"]["qty"], 5, "50% d'AAPL (5 actions) doivent rester ouvertes.")
+            self.assertTrue(pf1["positions"]["AAPL"].get("partial_tp_taken"))
+            self.assertGreaterEqual(pf1["positions"]["AAPL"]["stop_loss"], 100.0, "Le SL doit être sécurisé au PRU.")
+
+            # CYCLE 2 : AAPL monte à 102.8 -> le Trailing Stop serré (1.5% sous 102.8 = 101.258) remonte
+            live_prices["AAPL"] = 102.8
+            r2 = engine.run_single_cycle()
+            self.assertEqual(len(r2["sells"]), 0)
+            pf2 = load_portfolio(filepath=pf_path)
+            self.assertAlmostEqual(pf2["positions"]["AAPL"]["stop_loss"], 102.8 * (1.0 - 0.015), places=2)
+
+            # CYCLE 3 : AAPL recule à 101.10 (sous le Trailing Stop 101.26) -> Vente totale du solde en gain !
+            live_prices["AAPL"] = 101.10
+            r3 = engine.run_single_cycle()
+            self.assertEqual(len(r3["sells"]), 1)
+            self.assertEqual(r3["sells"][0]["symbol"], "AAPL")
+            self.assertEqual(r3["sells"][0]["qty"], 5)
+            self.assertGreater(r3["sells"][0]["pnl"], 0.0)
+            pf3 = load_portfolio(filepath=pf_path)
+            self.assertNotIn("AAPL", pf3["positions"])
 
 
 if __name__ == "__main__":

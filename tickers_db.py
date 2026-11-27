@@ -13,7 +13,7 @@ _YAHOO_VALID_SUFFIXES = (
     '.PA', '.DE', '.L', '.MI', '.MC', '.AS', '.BR', '.LS', '.SW', '.T',
     '.HK', '.TO', '.V', '.AX', '.F', '.ST', '.CO', '.OL', '.HE', '.SI',
     '.KS', '.KQ', '.TW', '.SS', '.SZ', '.NS', '.BO', '.SA', '.MX', '.WA',
-    '.VI', '.PR', '.IR', '.AT', '.IS', '.JO', '.NZ', '.TA', '-USD', '=X', '=F'
+    '.VI', '.PR', '.IR', '.AT', '.IS', '.JO', '.NZ', '.TA', '.SR', '-USD', '=X', '=F'
 )
 _EXCHANGE_TO_YAHOO_SUFFIX = {
     'EPA': '.PA', 'PARIS': '.PA', 'EURONEXT PARIS': '.PA', 'PAR': '.PA',
@@ -29,6 +29,7 @@ _EXCHANGE_TO_YAHOO_SUFFIX = {
     'HKG': '.HK', 'HKEX': '.HK', 'HONG KONG': '.HK',
     'TSE': '.TO', 'TSX': '.TO', 'TORONTO': '.TO',
     'ASX': '.AX', 'SYDNEY': '.AX',
+    'TADAWUL': '.SR', 'SAU': '.SR',
     'NASDAQ': '', 'NYSE': '', 'AMEX': '', 'NYSE ARCA': '', 'NYSE AMERICAN': '',
     'BATS': '', 'CBOE': '', 'US': '', 'OTC': ''
 }
@@ -69,9 +70,14 @@ def normalize_watchlist_symbol(raw_symbol, exchange=""):
                 break
 
         if not matched_us:
-            # 3. Suffixe Reuters Suisse (.S -> .SW)
+            # 3. Suffixe Reuters Suisse (.S -> .SW) & Arabie Saoudite (.SE -> .SR)
             if sym.endswith('.S') and len(sym) > 2:
                 sym = sym[:-2] + '.SW'
+            elif sym.endswith('.SE') and exch in {'TADAWUL', 'SAU', ''} and sym[:-3].isdigit():
+                sym = sym[:-3] + '.SR'
+            # 3b. Unités canadiennes Reuters (ex: CHE_U.TO -> CHE-UN.TO)
+            elif '_U.' in sym:
+                sym = sym.replace('_U.', '-UN.')
             # 4. Classes d'actions US (ex: BRK.B -> BRK-B)
             elif '.' in sym and not any(sym.endswith(s) for s in _YAHOO_VALID_SUFFIXES):
                 base, tail = sym.rsplit('.', 1)
