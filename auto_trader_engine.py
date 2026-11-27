@@ -200,14 +200,19 @@ class AutoTraderConfig:
     min_cash_reserve_pct: float = 10.0
     # Seuils de décision IA (consomment la prédiction du modèle sans toucher aux stratégies)
     min_buy_prob: float = 0.52
-    sell_prob_threshold: float = 0.45
+    sell_prob_threshold: float = 0.50
     # Critères de rentabilité et gestion dynamique du risque
-    take_profit_pct: float = 6.0
+    take_profit_pct: float = 3.0
     stop_loss_pct: float = 4.0
+    use_live_intraday_price: bool = True
     use_atr_stops: bool = True
     use_trailing_stop: bool = True
-    trailing_atr_mult: float = 2.0
+    trailing_atr_mult: float = 1.25
+    trailing_stop_pct: float = 1.5
     use_breakeven_stop: bool = True
+    use_partial_take_profit: bool = True
+    partial_take_profit_pct: float = 1.5
+    partial_take_profit_ratio: float = 0.50
     # Filtres de protection & coupe-circuits institutionnels
     use_vix_breaker: bool = True
     vix_max_threshold: float = 30.0
@@ -737,16 +742,17 @@ class AutoTraderEngine:
 
             avg_price = float(pos.get("avg_price", 0.0))
             eval_res = self._evaluate_ticker(sym, macro_df, current_vix)
+            live_px = self._price_fetcher(sym) if cfg.use_live_intraday_price else None
             if eval_res is not None:
                 eval_cache[sym] = eval_res
-                current_price = eval_res["price"]
+                current_price = float(live_px) if (live_px is not None and float(live_px) > 0) else eval_res["price"]
                 current_atr = eval_res["atr"]
                 prob_buy = eval_res["prob_buy"]
             else:
-                fetched_px = self._price_fetcher(sym)
+                fetched_px = live_px if (live_px is not None and float(live_px) > 0) else self._price_fetcher(sym)
                 if fetched_px is None or fetched_px <= 0:
                     continue
-                current_price = fetched_px
+                current_price = float(fetched_px)
                 current_atr = current_price * 0.02
                 prob_buy = 0.50
 
@@ -755,6 +761,13 @@ class AutoTraderEngine:
 
             sl_price = pos.get("stop_loss")
             tp_price = pos.get("take_profit")
+
+            # Suivi du plus haut prix atteint depuis l'ouverture (base du Trailing Stop serré)
+            prev_high = float(pos.get("highest_price") or avg_price or current_price)
+            highest_price = max(prev_high, current_price)
+            if highest_price > prev_high or "highest_price" not in pos:
+                pos["highest_price"] = highest_price
+                self._save_pf(pf)
 
             # 1a. Breakeven Stop automatique à +1R (verrouillage 0 risque)
             if cfg.use_breakeven_stop and sl_price is not None and avg_price > 0 and sl_price < avg_price:
@@ -765,16 +778,26 @@ class AutoTraderEngine:
                     self._save_pf(pf)
                     self._log("INFO", f"Breakeven Stop activé : SL remonté à {avg_price:.2f} $", ticker=sym)
 
-            # 1b. Trailing Stop ATR dynamique (ne redescend jamais)
-            if cfg.use_trailing_stop and current_atr > 0:
-                candidate_tsl = current_price - (cfg.trailing_atr_mult * current_atr)
-                if sl_price is None or candidate_tsl > sl_price:
-                    if current_price > avg_price:  # Active le trailing une fois en gain
+            # 1b. Trailing Stop serré dynamique (ATR + % depuis le plus haut, ne redescend jamais)
+            if cfg.use_trailing_stop and current_price > avg_price:
+                tsl_candidates: List[float] = []
+                if current_atr > 0 and cfg.trailing_atr_mult > 0:
+                    tsl_candidates.append(highest_price - (cfg.trailing_atr_mult * current_atr))
+                if cfg.trailing_stop_pct > 0:
+                    tsl_candidates.append(highest_price * (1.0 - cfg.trailing_stop_pct / 100.0))
+                if tsl_candidates:
+                    candidate_tsl = max(tsl_candidates)
+                    if sl_price is None or candidate_tsl > sl_price:
                         pos["stop_loss"] = candidate_tsl
                         sl_price = candidate_tsl
                         self._save_pf(pf)
+                        self._log(
+                            "INFO",
+                            f"Trailing Stop remonté à {sl_price:.2f} $ (plus haut: {highest_price:.2f} $)",
+                            ticker=sym,
+                        )
 
-            # 1c. Décision de vente selon critères de rentabilité & risque
+            # 1c. Décision de vente totale selon critères de rentabilité & risque
             sell_reason: Optional[str] = None
             if cfg.take_profit_pct > 0 and pnl_pct >= cfg.take_profit_pct:
                 sell_reason = f"🎯 Take-Profit Rentabilité (+{pnl_pct:.2f}% >= +{cfg.take_profit_pct:.1f}%)"
@@ -782,8 +805,8 @@ class AutoTraderEngine:
                 sell_reason = f"🎯 Take-Profit ATR atteint ({current_price:.2f} >= {tp_price:.2f})"
             elif cfg.stop_loss_pct > 0 and pnl_pct <= -cfg.stop_loss_pct:
                 sell_reason = f"🛑 Stop-Loss Max Perte ({pnl_pct:.2f}% <= -{cfg.stop_loss_pct:.1f}%)"
-            elif cfg.use_atr_stops and sl_price is not None and current_price <= sl_price:
-                sell_reason = f"🛑 Stop-Loss / Trailing ATR atteint ({current_price:.2f} <= {sl_price:.2f})"
+            elif (cfg.use_atr_stops or cfg.use_trailing_stop) and sl_price is not None and current_price <= sl_price:
+                sell_reason = f"🛑 Stop-Loss / Trailing atteint ({current_price:.2f} <= {sl_price:.2f})"
             elif eval_res is not None and prob_buy <= cfg.sell_prob_threshold:
                 sell_reason = f"🔴 Signal IA Baissier (Prob={prob_buy*100:.1f}% <= {cfg.sell_prob_threshold*100:.0f}%)"
 
@@ -807,6 +830,51 @@ class AutoTraderEngine:
                         sells_executed.append({"symbol": sym, "qty": qty, "price": current_price, "pnl": float(realized), "reason": sell_reason})
                     else:
                         self._log("WARN", f"Échec vente {sym}: {msg}", ticker=sym)
+            # 1d. Prise de profit partielle automatique (sécurise une partie des gains + remonte SL au Breakeven)
+            elif (
+                cfg.use_partial_take_profit
+                and cfg.partial_take_profit_pct > 0
+                and not pos.get("partial_tp_taken", False)
+                and pnl_pct >= cfg.partial_take_profit_pct
+                and qty >= 2
+            ):
+                ratio = max(0.1, min(0.9, float(cfg.partial_take_profit_ratio)))
+                partial_qty = max(1, min(int(qty) - 1, int(round(qty * ratio))))
+                partial_reason = (
+                    f"💰 Prise de Profit Partielle ({int(ratio*100)}%) "
+                    f"(+{pnl_pct:.2f}% >= +{cfg.partial_take_profit_pct:.1f}%)"
+                )
+                est_partial_pnl = (current_price - avg_price) * partial_qty
+                if cfg.dry_run:
+                    self._log(
+                        "SELL",
+                        f"[DRY-RUN] Vente partielle {partial_qty}/{int(qty)} {sym} @ {current_price:.2f} $ — {partial_reason}",
+                        ticker=sym,
+                    )
+                    self._record_trade_event("SELL (PARTIAL)", sym, partial_qty, current_price, partial_reason, pnl=est_partial_pnl, dry_run=True)
+                    sells_executed.append({"symbol": sym, "qty": partial_qty, "price": current_price, "pnl": est_partial_pnl, "reason": partial_reason})
+                else:
+                    ok, msg = execute_equity_trade(pf, sym, partial_qty, "SELL (Partial TP)", current_price)
+                    if ok:
+                        rem_pos = pf["positions"].get(sym)
+                        if rem_pos is not None:
+                            rem_pos["partial_tp_taken"] = True
+                            if avg_price > 0 and (rem_pos.get("stop_loss") is None or rem_pos["stop_loss"] < avg_price):
+                                rem_pos["stop_loss"] = avg_price
+                        self._save_pf(pf)
+                        realized = pf["history"][-1].get("pnl", est_partial_pnl) if pf["history"] else est_partial_pnl
+                        with self._lock:
+                            self._total_sells += 1
+                            self._realized_pnl += float(realized)
+                        self._log(
+                            "SELL",
+                            f"Vente partielle {partial_qty} {sym} @ {current_price:.2f} $ (PnL: {realized:+.2f} $) — {partial_reason} | SL sécurisé au PRU ({avg_price:.2f} $)",
+                            ticker=sym,
+                        )
+                        self._record_trade_event("SELL (PARTIAL)", sym, partial_qty, current_price, partial_reason, pnl=float(realized), dry_run=False)
+                        sells_executed.append({"symbol": sym, "qty": partial_qty, "price": current_price, "pnl": float(realized), "reason": partial_reason})
+                    else:
+                        self._log("WARN", f"Échec vente partielle {sym}: {msg}", ticker=sym)
 
         # ---------------------------------------------------------------------
         # PHASE 2 : CALCUL ÉQUITÉ & COUPE-CIRCUITS INSTITUTIONNELS

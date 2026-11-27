@@ -3008,13 +3008,14 @@ def page_auto_trading(sidebar_tickers=None, sidebar_csv_files=None):
             value=int(round(saved_cfg.min_buy_prob * 100)), step=1, key="auto_cfg_buy_prob",
         )
         sell_prob_pct = r2.slider(
-            "Seuil Signal IA Vente (%)", min_value=20, max_value=50,
+            "Seuil Signal IA Vente (%)", min_value=20, max_value=65,
             value=int(round(saved_cfg.sell_prob_threshold * 100)), step=1, key="auto_cfg_sell_prob",
+            help="Vend automatiquement si la probabilité haussière IA descend sous ou atteint ce seuil (défaut : 50%).",
         )
         take_profit_pct = r3.number_input(
             "Take-Profit Rentabilité (%)", min_value=0.0, max_value=100.0,
             value=float(saved_cfg.take_profit_pct), step=0.5, key="auto_cfg_tp_pct",
-            help="Vente automatique dès que le gain atteint ce % (0 = uniquement TP ATR).",
+            help="Vente automatique dès que le gain atteint ce % (défaut : 3.0%, 0 = uniquement TP ATR).",
         )
         stop_loss_pct = r4.number_input(
             "Stop-Loss Max Perte (%)", min_value=0.0, max_value=50.0,
@@ -3022,13 +3023,40 @@ def page_auto_trading(sidebar_tickers=None, sidebar_csv_files=None):
             help="Vente automatique de protection si la perte atteint ce % (0 = uniquement SL ATR).",
         )
 
-        s1, s2, s3, s4 = st.columns(4)
-        use_atr_stops = s1.checkbox("Stops ATR Dynamiques", value=bool(saved_cfg.use_atr_stops), key="auto_cfg_atr")
-        use_trailing_stop = s2.checkbox("Trailing Stop ATR", value=bool(saved_cfg.use_trailing_stop), key="auto_cfg_tsl")
-        use_breakeven_stop = s3.checkbox("Breakeven Auto (+1R)", value=bool(saved_cfg.use_breakeven_stop), key="auto_cfg_be")
-        trailing_atr_mult = s4.number_input(
-            "Multiplicateur Trailing ATR", min_value=0.5, max_value=5.0,
+        s1, s2, s3, s4, s5 = st.columns(5)
+        use_live_intraday_price = s1.checkbox(
+            "Prix Live Intraday (SL/TP)",
+            value=bool(saved_cfg.use_live_intraday_price),
+            key="auto_cfg_live_px",
+            help="Utilise le cours intraday temps réel (fast_info) pour déclencher SL/TP/Trailing plus rapidement.",
+        )
+        use_atr_stops = s2.checkbox("Stops ATR Dynamiques", value=bool(saved_cfg.use_atr_stops), key="auto_cfg_atr")
+        use_trailing_stop = s3.checkbox("Trailing Stop Serré", value=bool(saved_cfg.use_trailing_stop), key="auto_cfg_tsl")
+        use_breakeven_stop = s4.checkbox("Breakeven Auto (+1R)", value=bool(saved_cfg.use_breakeven_stop), key="auto_cfg_be")
+        trailing_atr_mult = s5.number_input(
+            "Mult. Trailing ATR", min_value=0.5, max_value=5.0,
             value=float(saved_cfg.trailing_atr_mult), step=0.25, key="auto_cfg_tsl_mult",
+        )
+
+        t1, t2, t3, t4 = st.columns(4)
+        trailing_stop_pct = t1.number_input(
+            "Trailing Stop Serré (%)", min_value=0.0, max_value=20.0,
+            value=float(saved_cfg.trailing_stop_pct), step=0.25, key="auto_cfg_tsl_pct",
+            help="Distance max (%) sous le plus haut atteint une fois en gain (0 = désactivé).",
+        )
+        use_partial_take_profit = t2.checkbox(
+            "Prise de Profit Partielle",
+            value=bool(saved_cfg.use_partial_take_profit),
+            key="auto_cfg_partial_tp",
+            help="Vend une partie de la position dès le seuil intermédiaire et remonte le SL au PRU.",
+        )
+        partial_take_profit_pct = t3.number_input(
+            "Seuil TP Partiel (%)", min_value=0.5, max_value=50.0,
+            value=float(saved_cfg.partial_take_profit_pct), step=0.25, key="auto_cfg_partial_tp_pct",
+        )
+        partial_take_profit_ratio_pct = t4.slider(
+            "Part vendue TP Partiel (%)", min_value=20, max_value=80,
+            value=int(round(saved_cfg.partial_take_profit_ratio * 100)), step=5, key="auto_cfg_partial_tp_ratio",
         )
 
         g1, g2, g3, g4, g5 = st.columns(5)
@@ -3088,10 +3116,15 @@ def page_auto_trading(sidebar_tickers=None, sidebar_csv_files=None):
         sell_prob_threshold=float(sell_prob_pct) / 100.0,
         take_profit_pct=float(take_profit_pct),
         stop_loss_pct=float(stop_loss_pct),
+        use_live_intraday_price=bool(use_live_intraday_price),
         use_atr_stops=bool(use_atr_stops),
         use_trailing_stop=bool(use_trailing_stop),
         trailing_atr_mult=float(trailing_atr_mult),
+        trailing_stop_pct=float(trailing_stop_pct),
         use_breakeven_stop=bool(use_breakeven_stop),
+        use_partial_take_profit=bool(use_partial_take_profit),
+        partial_take_profit_pct=float(partial_take_profit_pct),
+        partial_take_profit_ratio=float(partial_take_profit_ratio_pct) / 100.0,
         use_vix_breaker=bool(use_vix_breaker),
         vix_max_threshold=float(vix_max_threshold),
         use_rsi_shield=bool(use_rsi_shield),
@@ -3331,8 +3364,37 @@ def page_auto_trading(sidebar_tickers=None, sidebar_csv_files=None):
                     pass
                 return ""
 
-            styled_live = df_live.style.map(_color_pnl, subset=["Gain/Perte ($)", "Gain/Perte (%)"])
-            st.dataframe(styled_live, use_container_width=True, hide_index=True)
+            def _fmt_qty(val):
+                try:
+                    f = float(val)
+                    return f"{int(f)}" if f.is_integer() else f"{f:.2f}"
+                except Exception:
+                    return str(val)
+
+            styled_live = (
+                df_live.style
+                .map(_color_pnl, subset=["Gain/Perte ($)", "Gain/Perte (%)"])
+                .format(
+                    {
+                        "Quantité": _fmt_qty,
+                        "PRU ($)": "{:.2f}",
+                        "Cours Live ($)": "{:.2f}",
+                        "Stop-Loss ($)": lambda v: f"{v:.2f}" if pd.notna(v) else "—",
+                        "Take-Profit ($)": lambda v: f"{v:.2f}" if pd.notna(v) else "—",
+                        "Valeur Live ($)": "{:,.2f}",
+                        "Gain/Perte ($)": "{:+.2f}",
+                        "Gain/Perte (%)": "{:+.2f}%",
+                        "Marge SL (%)": lambda v: f"{v:.2f}%" if pd.notna(v) else "—",
+                        "Cible TP (%)": lambda v: f"{v:.2f}%" if pd.notna(v) else "—",
+                    },
+                    na_rep="—",
+                )
+            )
+            try:
+                _live_col_cfg = {"Symbole": st.column_config.TextColumn("Symbole", pinned=True)}
+            except Exception:
+                _live_col_cfg = None
+            st.dataframe(styled_live, use_container_width=True, hide_index=True, column_config=_live_col_cfg)
 
             # Graphique comparatif Cours Live vs PRU / Stop-Loss / Take-Profit
             fig_levels = go.Figure()
